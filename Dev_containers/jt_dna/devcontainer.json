@@ -1,0 +1,36 @@
+{
+    "name": "JT_dna",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+
+    // 1. Connect as the specific user (VS Code handles the UID mapping automatically)
+    "remoteUser": "jovyan",
+
+    // 2. Set the working directory to where we are putting your project files
+    "workspaceFolder": "/home/jovyan/work",
+
+    // 3. Mount the actual project folder (the one containing .devcontainer)
+    // ${localWorkspaceFolder} refers to the folder you opened on the Remote Host
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/jovyan/work,type=bind",
+
+    // 4. Mount your extra data volumes from the Remote Host
+    // We mount them INSIDE /work so you can see them in the file sidebar
+    "mounts": [
+        "source=/mnt/share_data/JT,target=/home/jovyan/work/share,type=bind"
+    ],
+
+    // 5. Optional: customizations to install extensions automatically
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter"
+            ]
+        }
+    },
+    // 6. Optional: specify what to do when the container is stopped
+    "shutdownAction": "stopContainer"
+
+}
