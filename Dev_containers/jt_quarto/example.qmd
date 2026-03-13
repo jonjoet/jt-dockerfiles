@@ -1,0 +1,89 @@
+---
+title: "R + Python in Quarto"
+format:
+  html:
+    toc: true
+    code-fold: true
+jupyter: python3
+---
+
+## Setup
+
+Quarto handles both Python and R chunks in the same document.
+Data flows between them via `reticulate`.
+
+```{python}
+#| label: py-setup
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Make some data in Python
+rng = np.random.default_rng(42)
+n = 200
+
+df = pd.DataFrame({
+    "x": rng.normal(0, 1, n),
+    "y": rng.normal(0, 1, n),
+    "group": rng.choice(["A", "B", "C"], n)
+})
+
+print(df.head())
+```
+
+```{python}
+#| label: py-plot
+#| fig-cap: "Seaborn scatterplot — done in Python"
+sns.scatterplot(data=df, x="x", y="y", hue="group", alpha=0.7)
+plt.tight_layout()
+plt.show()
+```
+
+## Handing off to R
+
+Use `reticulate::py$` to access any Python object in R.
+
+```{r}
+#| label: r-setup
+library(ggplot2)
+library(dplyr)
+
+# Grab the dataframe created in the Python chunk above
+df_r <- reticulate::py$df
+
+glimpse(df_r)
+```
+
+```{r}
+#| label: r-plot
+#| fig-cap: "ggplot2 — same data, rendered in R"
+ggplot(df_r, aes(x = x, y = y, colour = group)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~group) +
+  theme_minimal()
+```
+
+## Passing data back to Python
+
+```{r}
+#| label: r-model
+# Run a model in R, pass summary stats back to Python
+model_summary <- df_r |>
+  group_by(group) |>
+  summarise(
+    mean_x = mean(x),
+    mean_y = mean(y),
+    cor_xy = cor(x, y)
+  )
+
+# This becomes available as py$r.model_summary in subsequent Python chunks
+```
+
+```{python}
+#| label: py-use-r-output
+import r  # reticulate magic — access R objects via the `r` module
+
+summary_df = r.model_summary
+print(summary_df)
+```

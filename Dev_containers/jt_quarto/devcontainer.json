@@ -1,0 +1,36 @@
+{
+  "name": "Quarto R + Python",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "quarto.quarto",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "REditorSupport.r",
+        "eamodio.gitlens",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "r.rpath.linux": "/usr/bin/R",
+        "r.rterm.linux": "/usr/bin/Rscript",
+        "quarto.render.renderOnSave": false
+      }
+    }
+  },
+
+  "forwardPorts": [8888],
+
+  "postStartCommand": "Rscript -e \"if (file.exists('renv.lock')) renv::restore(prompt = FALSE)\" && pip install -r requirements.txt --quiet",
+
+  "shutdownAction": "stopContainer"
+}
