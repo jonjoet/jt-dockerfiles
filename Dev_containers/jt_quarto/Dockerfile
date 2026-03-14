@@ -22,7 +22,9 @@ RUN Rscript -e " \
 "
 
 # ── Register IRkernel for Jupyter ────────────────────────────────────────────
-RUN PATH="/opt/venv/bin:$PATH" Rscript -e "IRkernel::installspec(user = FALSE)"
+# Symlink jupyter into a standard bin so R's system2() can find it
+RUN ln -s /opt/venv/bin/jupyter /usr/local/bin/jupyter
+RUN Rscript -e "IRkernel::installspec(user = FALSE)"
 
 # ── Tell reticulate which Python to use ──────────────────────────────────────
 ENV RETICULATE_PYTHON=/opt/venv/bin/python
