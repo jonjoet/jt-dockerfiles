@@ -26,6 +26,9 @@ RUN Rscript -e " \
 RUN ln -s /opt/venv/bin/jupyter /usr/local/bin/jupyter
 RUN Rscript -e "IRkernel::installspec(user = FALSE)"
 
+# ── R language server for VS Code ──────────────────────────────────────────
+RUN Rscript -e "install.packages('languageserver', repos='https://cloud.r-project.org')"
+
 # ── Tell reticulate which Python to use ──────────────────────────────────────
 ENV RETICULATE_PYTHON=/opt/venv/bin/python
 
