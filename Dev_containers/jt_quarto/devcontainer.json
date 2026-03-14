@@ -21,8 +21,8 @@
       ],
       "settings": {
         "python.defaultInterpreterPath": "/opt/venv/bin/python",
-        "r.rpath.linux": "/usr/bin/R",
-        "r.rterm.linux": "/usr/bin/Rscript",
+        "r.rpath.linux": "/usr/local/bin/R",
+        "r.rterm.linux": "/usr/local/bin/Rscript",
         "quarto.render.renderOnSave": false
       }
     }

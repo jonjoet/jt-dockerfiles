@@ -1,0 +1,312 @@
+---
+title: "Plasmid Copy Number Analysis — dPCR"
+author: ""
+format:
+  html:
+    toc: true
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+editor: visual
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+library(lme4)
+library(lmerTest)  # p-values for fixed effects
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(emmeans)
+
+theme_set(theme_minimal(base_size = 13))
+```
+
+## Data Structure
+
+Expected input: a CSV in semi-wide format with columns:
+
+- `strain` (factor, 3 levels)
+- `antibiotic` (factor: "none" / "treated" or similar)
+- `timepoint` (numeric, e.g. hours)
+- `bio_rep` (1 or 2)
+- `tech_rep` (1, 2, or 3)
+- `plasmid_per_ter` (HEX/FAM ratio from plasmid + terminus duplex)
+- `plasmid_per_ori` (HEX/FAM ratio from plasmid + origin duplex)
+- `ori_ter` (origin/terminus ratio from the direct comparison plate; 
+   same value repeated across tech reps for a given bio sample)
+
+```{r}
+#| label: load-data
+
+# ---- Replace this with your actual data file ----
+# df <- read.csv("your_data.csv")
+
+# ---- Simulated example data for testing the pipeline ----
+set.seed(42)
+
+strains <- c("A", "B", "C")
+antibiotics <- c("none", "abx")
+timepoints <- c(0, 2, 4, 6)
+
+df <- expand.grid(
+  strain = strains,
+  antibiotic = antibiotics,
+  timepoint = timepoints,
+  bio_rep = 1:2,
+  tech_rep = 1:3
+) |>
+  mutate(
+    # simulate some biology: copy number varies by strain, responds to abx over time
+    true_pcn = 5 +
+      (strain == "B") * 3 +
+      (strain == "C") * -1 +
+      (antibiotic == "abx") * timepoint * 0.5 +
+      (strain == "B" & antibiotic == "abx") * timepoint * 0.3,
+    # ori/ter increases with growth, varies by condition (sample-level, no tech rep noise)
+    ori_ter = 1.5 +
+      timepoint * 0.05 +
+      (antibiotic == "abx") * -0.1 +
+      rnorm(n(), 0, 0.05),
+    # bio rep random effect
+    bio_effect = rep(rnorm(n() / 3, 0, 0.5), each = 3),
+    # observed values with tech rep noise
+    plasmid_per_ter = true_pcn + bio_effect + rnorm(n(), 0, 0.3),
+    plasmid_per_ori = (true_pcn / ori_ter) + bio_effect / ori_ter + rnorm(n(), 0, 0.25),
+  ) |>
+  select(-true_pcn, -bio_effect)
+
+# Ensure factors
+df <- df |>
+  mutate(
+    strain = factor(strain),
+    antibiotic = factor(antibiotic, levels = c("none", "abx")),
+    bio_rep = factor(bio_rep),
+    tech_rep = factor(tech_rep),
+    # unique biological sample ID for random effect
+    sample_id = interaction(strain, antibiotic, bio_rep, drop = TRUE)
+  )
+
+glimpse(df)
+```
+
+## Sanity Checks
+
+### Ori/Ter consistency across dilutions
+
+If you averaged your two dilutions before building this table, just confirm the
+ori/ter values look reasonable. They should be ≥1 (origin is at least as abundant
+as terminus) and higher values indicate faster growth.
+
+```{r}
+#| label: ori-ter-check
+
+df |>
+  distinct(strain, antibiotic, timepoint, bio_rep, ori_ter) |>
+  ggplot(aes(x = timepoint, y = ori_ter, colour = strain, shape = antibiotic)) +
+  geom_point(size = 3, position = position_dodge(width = 0.3)) +
+  labs(y = "Origin / Terminus ratio", x = "Time") +
+  ggtitle("Ori/Ter ratio across conditions")
+```
+
+### Raw plasmid copy number
+
+```{r}
+#| label: raw-data-plot
+#| fig-height: 5
+#| fig-width: 9
+
+df |>
+  ggplot(aes(x = timepoint, y = plasmid_per_ter,
+             colour = strain, shape = antibiotic)) +
+  geom_point(alpha = 0.4, position = position_jitterdodge(jitter.width = 0.1,
+                                                           dodge.width = 0.4)) +
+  stat_summary(aes(group = interaction(strain, antibiotic)),
+               fun = mean, geom = "line",
+               position = position_dodge(width = 0.4)) +
+  labs(y = "Plasmid copies / terminus (genome)", x = "Time") +
+  ggtitle("Plasmid copy number (terminus-normalised)")
+```
+
+## Primary Model: Plasmid per Terminus
+
+Continuous timepoint with three-way interaction. Ori/ter as covariate to account
+for growth-rate-associated variation. Random intercept per biological sample.
+
+```{r}
+#| label: model-ter
+
+mod_ter <- lmer(
+  plasmid_per_ter ~ strain * antibiotic * timepoint + ori_ter +
+    (1 | sample_id),
+  data = df
+)
+
+summary(mod_ter)
+```
+
+### Check whether three-way interaction is needed
+
+```{r}
+#| label: model-comparison
+
+mod_ter_2way <- lmer(
+  plasmid_per_ter ~ (strain + antibiotic + timepoint)^2 + ori_ter +
+    (1 | sample_id),
+  data = df
+)
+
+anova(mod_ter_2way, mod_ter)
+```
+
+If the three-way interaction is not significant, drop it and use the simpler
+two-way model for cleaner interpretation.
+
+### Diagnostics
+
+```{r}
+#| label: diagnostics-ter
+#| fig-height: 4
+#| fig-width: 8
+#| layout-ncol: 2
+
+plot(mod_ter, main = "Residuals vs Fitted")
+qqnorm(resid(mod_ter)); qqline(resid(mod_ter))
+```
+
+### Estimated marginal means
+
+```{r}
+#| label: emmeans-ter
+#| fig-height: 5
+#| fig-width: 9
+
+# Predictions at each timepoint × strain × antibiotic
+# ori_ter held at its mean
+em_ter <- emmeans(mod_ter, ~ strain * antibiotic | timepoint,
+                  at = list(timepoint = unique(df$timepoint)),
+                  lmer.df = "satterthwaite")
+
+em_df <- as.data.frame(em_ter)
+
+ggplot(em_df, aes(x = timepoint, y = emmean,
+                  colour = strain, linetype = antibiotic)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL, fill = strain),
+              alpha = 0.15, colour = NA) +
+  labs(y = "Estimated plasmid copies / genome",
+       x = "Time") +
+  ggtitle("Model estimates: plasmid copy number (terminus-normalised)")
+```
+
+### Slopes: rate of change over time
+
+```{r}
+#| label: slopes-ter
+
+emtrends(mod_ter, pairwise ~ strain * antibiotic, var = "timepoint",
+         lmer.df = "satterthwaite")
+```
+
+## Secondary Model: Plasmid per Origin
+
+Same structure, different response. Useful as a consistency check — if plasmid
+copy number is genuinely changing, both normalisations should show it, scaled
+by the ori/ter ratio.
+
+```{r}
+#| label: model-ori
+
+mod_ori <- lmer(
+  plasmid_per_ori ~ strain * antibiotic * timepoint + ori_ter +
+    (1 | sample_id),
+  data = df
+)
+
+summary(mod_ori)
+```
+
+## Comparing the Two Normalisations
+
+If the two models give qualitatively different answers for a condition, the
+discrepancy is informative — it suggests the effect is mediated by (or
+confounded with) replication state rather than true copy number regulation.
+
+```{r}
+#| label: comparison-plot
+#| fig-height: 5
+#| fig-width: 10
+
+em_ori <- emmeans(mod_ori, ~ strain * antibiotic | timepoint,
+                  at = list(timepoint = unique(df$timepoint)),
+                  lmer.df = "satterthwaite") |>
+  as.data.frame() |>
+  mutate(normalisation = "per origin")
+
+em_both <- em_df |>
+  mutate(normalisation = "per terminus") |>
+  bind_rows(em_ori)
+
+ggplot(em_both, aes(x = timepoint, y = emmean,
+                    colour = strain, linetype = antibiotic)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL, fill = strain),
+              alpha = 0.12, colour = NA) +
+  facet_wrap(~ normalisation, scales = "free_y") +
+  labs(y = "Estimated plasmid copies", x = "Time") +
+  ggtitle("Plasmid copy number: terminus vs origin normalisation")
+```
+
+## Effect of Ori/Ter Covariate
+
+Check whether the ori/ter ratio meaningfully adjusts the estimates. If its
+coefficient is near zero or non-significant, growth state isn't confounding
+your copy number measurements at these timepoints.
+
+```{r}
+#| label: ori-ter-effect
+
+# Coefficient from the terminus model
+fixef(mod_ter)["ori_ter"]
+summary(mod_ter)$coefficients["ori_ter", ]
+
+# Model without the covariate for comparison
+mod_ter_no_ot <- lmer(
+  plasmid_per_ter ~ strain * antibiotic * timepoint +
+    (1 | sample_id),
+  data = df
+)
+
+anova(mod_ter_no_ot, mod_ter)
+```
+
+## Quick Descriptive Summary
+
+Plain means ± SD by condition and timepoint, averaged over tech reps first.
+
+```{r}
+#| label: descriptive
+
+df |>
+  group_by(strain, antibiotic, timepoint, bio_rep) |>
+  summarise(
+    pcn_ter = mean(plasmid_per_ter),
+    pcn_ori = mean(plasmid_per_ori),
+    ot = mean(ori_ter),
+    .groups = "drop"
+  ) |>
+  group_by(strain, antibiotic, timepoint) |>
+  summarise(
+    n = n(),
+    pcn_ter_mean = mean(pcn_ter),
+    pcn_ter_sd = sd(pcn_ter),
+    pcn_ori_mean = mean(pcn_ori),
+    pcn_ori_sd = sd(pcn_ori),
+    ori_ter_mean = mean(ot),
+    .groups = "drop"
+  ) |>
+  knitr::kable(digits = 2)
+```
