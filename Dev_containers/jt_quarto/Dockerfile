@@ -5,9 +5,12 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Python packages ──────────────────────────────────────────────────────────
+# ── Python virtual environment + packages ────────────────────────────────────
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ── Additional R packages via renv ───────────────────────────────────────────
 RUN Rscript -e "install.packages('renv', repos='https://cloud.r-project.org')"
@@ -22,7 +25,7 @@ RUN Rscript -e " \
 RUN Rscript -e "IRkernel::installspec(user = FALSE)"
 
 # ── Tell reticulate which Python to use ──────────────────────────────────────
-ENV RETICULATE_PYTHON=/usr/bin/python3
+ENV RETICULATE_PYTHON=/opt/venv/bin/python
 
 # ── Working directory ────────────────────────────────────────────────────────
 WORKDIR /workspace

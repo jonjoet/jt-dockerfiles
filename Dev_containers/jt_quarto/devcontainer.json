@@ -20,7 +20,7 @@
         "streetsidesoftware.code-spell-checker"
       ],
       "settings": {
-        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
         "r.rpath.linux": "/usr/bin/R",
         "r.rterm.linux": "/usr/bin/Rscript",
         "quarto.render.renderOnSave": false
