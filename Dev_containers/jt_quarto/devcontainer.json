@@ -29,13 +29,12 @@
   },
 
   "mounts": [
-    "source=/storage/jon,target=/workspace/storage,type=bind",
-    "source=/mnt/share_data2/JT,target=/workspace/share,type=bind"
+    "source=/mnt/share_data2/JT,target=/workspace/share_data2,type=bind"
   ],
 
   "forwardPorts": [8888],
 
-  "postStartCommand": "Rscript -e \"if (file.exists('renv.lock')) renv::restore(prompt = FALSE)\" && pip install -r requirements.txt --quiet",
+  "postStartCommand": "Rscript -e \"renv::restore(lockfile='/workspace/.devcontainer/jt_quarto/renv.lock', prompt=FALSE)\" && pip install -r /workspace/.devcontainer/jt_quarto/requirements.txt --quiet",
 
   "shutdownAction": "stopContainer"
 }
