@@ -1,0 +1,32 @@
+{
+  "name": "R + Python + Quarto",
+  "image": "ghcr.io/rocker-org/devcontainer/tidyverse:4",
+"mounts": [
+    "source=/mnt/share_data2/JT,target=${containerWorkspaceFolder}/share_data2,type=bind"
+],
+  "features": {
+    "ghcr.io/rocker-org/devcontainer-features/quarto-cli:1": {
+      "version": "release"
+    },
+    "ghcr.io/rocker-org/devcontainer-features/r-packages:1": {
+      "packages": "languageserver,httpgd,reticulate"
+    },
+    "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+      "packages": "libxt6,python3-venv,python3-pip"
+    }
+  },
+  "postCreateCommand": "python3 -m venv /home/rstudio/.venv && /home/rstudio/.venv/bin/pip install jupyter numpy pandas matplotlib",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "REditorSupport.r",
+        "quarto.quarto",
+        "ms-python.python"
+      ],
+      "settings": {
+        "r.rterm.option": ["--no-save", "--no-restore-data", "--quiet"],
+        "python.defaultInterpreterPath": "/home/rstudio/.venv/bin/python"
+      }
+    }
+  }
+}
