@@ -23,10 +23,16 @@
         "quarto.quarto",
         "ms-python.python"
       ],
-      "settings": {
-        "r.rterm.option": ["--no-save", "--no-restore-data", "--quiet"],
-        "python.defaultInterpreterPath": "/home/rstudio/.venv/bin/python"
-      }
+  "settings": {
+    "r.rterm.option": ["--no-save", "--no-restore-data", "--quiet"],
+    "python.defaultInterpreterPath": "/home/rstudio/.venv/bin/python",
+    "r.rpath.linux": "/usr/local/bin/R",
+    "r.lsp.enabled": true,
+    "r.lsp.diagnostics": false,
+    "r.lsp.debug": true,
+    "r.useRenvLibPath": false,
+    "r.session.levelOfObjectDetail": "Minimal"
+}
     }
   }
 }
