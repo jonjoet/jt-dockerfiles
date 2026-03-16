@@ -18,7 +18,7 @@
     // 4. Mount your extra data volumes from the Remote Host
     // We mount them INSIDE /work so you can see them in the file sidebar
     "mounts": [
-        "source=/mnt/share_data/JT,target=/home/jovyan/work/share,type=bind"
+        "source=/mnt/share_data2/JT,target=/home/jovyan/work/share_data2,type=bind"
     ],
 
     // 5. Optional: customizations to install extensions automatically
