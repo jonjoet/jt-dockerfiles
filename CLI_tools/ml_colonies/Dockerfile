@@ -58,6 +58,10 @@ RUN sed -i "s|json_path = r'F:\\\\final_version.*class_indices.json'|json_path =
 RUN sed -i "s|device = torch.device('cpu')|device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')|" \
         /app/repo/ColonyCounting/final_predict.py
 
+# Fix hardcoded Windows path for input image directory
+RUN sed -i "s|infer_dir = r'E:\\\\Desktop\\\\testout'|infer_dir = './Inferences'|" \
+        /app/repo/ColonyCounting/final_predict.py
+
 # Ensure the weights directory structure exists (user mounts weights here)
 RUN mkdir -p /app/repo/ColonyCounting/weights/u2net \
              /app/repo/ColonyCounting/weights/ResNet \
