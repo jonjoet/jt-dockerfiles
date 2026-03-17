@@ -54,9 +54,10 @@ RUN git clone --branch master --depth 1 \
 RUN sed -i "s|json_path = r'F:\\\\final_version.*class_indices.json'|json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'class_indices.json')|" \
         /app/repo/ColonyCounting/model_src/resnet__50/pred_api.py
 
-# Patch final_predict.py to use CUDA when available instead of hardcoded CPU
+# Patch hardcoded CPU device to use CUDA when available
 RUN sed -i "s|device = torch.device('cpu')|device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')|" \
-        /app/repo/ColonyCounting/final_predict.py
+        /app/repo/ColonyCounting/final_predict.py \
+        /app/repo/ColonyCounting/model_src/resnet__50/pred_api.py
 
 # Fix hardcoded Windows path for input image directory
 RUN sed -i "s|infer_dir = r'E:\\\\Desktop\\\\testout'|infer_dir = './Inferences'|" \
