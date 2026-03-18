@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -e .
 RUN pip install --no-cache-dir --no-build-isolation -e grounding_dino
 
 # ── Install remaining Python deps ────────────────────────────────────
-RUN pip install --no-cache-dir opencv-python supervision matplotlib
+RUN pip install --no-cache-dir opencv-python supervision matplotlib transformers
 
 # ── Clone ColonyGroundedSam2 ─────────────────────────────────────────
 RUN git clone https://github.com/WFSRDataScience/ColonyGroundedSam2.git /opt/ColonyGroundedSam2
