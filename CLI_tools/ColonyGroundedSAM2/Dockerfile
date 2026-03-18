@@ -38,7 +38,7 @@ RUN sed -i \
 
 # grounding_dino internals use "grounding_dino.groundingdino.*" imports
 # that resolve only when the Grounded-SAM-2 root is on PYTHONPATH
-ENV PYTHONPATH="/opt/Grounded-SAM-2:${PYTHONPATH}"
+ENV PYTHONPATH="/opt/Grounded-SAM-2"
 
 WORKDIR /opt/ColonyGroundedSam2
 
