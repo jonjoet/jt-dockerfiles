@@ -36,6 +36,10 @@ RUN sed -i \
     's|"Grounded-SAM-2-main/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"|"/opt/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"|' \
     /opt/ColonyGroundedSam2/infer.py
 
+# grounding_dino internals use "grounding_dino.groundingdino.*" imports
+# that resolve only when the Grounded-SAM-2 root is on PYTHONPATH
+ENV PYTHONPATH="/opt/Grounded-SAM-2:${PYTHONPATH}"
+
 WORKDIR /opt/ColonyGroundedSam2
 
 ENTRYPOINT ["python", "infer.py"]
