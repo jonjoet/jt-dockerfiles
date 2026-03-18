@@ -24,7 +24,7 @@ RUN git clone https://github.com/IDEA-Research/Grounded-SAM-2.git
 WORKDIR /opt/Grounded-SAM-2
 
 RUN pip install --no-cache-dir --upgrade pip "setuptools>=62.3.0" wheel numpy \
-    opencv-python transformers supervision pycocotools addict yapf timm matplotlib
+    opencv-python "transformers<4.49" supervision pycocotools addict yapf timm matplotlib
 
 RUN pip install --no-cache-dir -e .
 RUN pip install --no-cache-dir --no-build-isolation -e grounding_dino
