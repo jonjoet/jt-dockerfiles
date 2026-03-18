@@ -42,6 +42,12 @@ RUN sed -i \
     /opt/ColonyGroundedSam2/infer.py \
  && sed -i \
     's|"Grounded-SAM-2-main/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"|"/opt/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"|' \
+    /opt/ColonyGroundedSam2/infer.py \
+ && sed -i \
+    's|if len(crop_coords) == len(data_paths):|if crop_coords is not None and len(crop_coords) == len(data_paths):|' \
+    /opt/ColonyGroundedSam2/infer.py \
+ && sed -i \
+    's|elif len(crop_coords) == 4:|elif crop_coords is not None and len(crop_coords) == 4:|' \
     /opt/ColonyGroundedSam2/infer.py
 
 # grounding_dino internals use "grounding_dino.groundingdino.*" imports
