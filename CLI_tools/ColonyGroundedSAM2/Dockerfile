@@ -48,6 +48,12 @@ RUN sed -i \
     /opt/ColonyGroundedSam2/infer.py \
  && sed -i \
     's|elif len(crop_coords) == 4:|elif crop_coords is not None and len(crop_coords) == 4:|' \
+    /opt/ColonyGroundedSam2/infer.py \
+ && sed -i \
+    '/masks = np.concatenate(all_masks, axis=0)/i\        if not all_masks:\n            print(f"No colonies detected in {img_path}, skipping.")\n            continue' \
+    /opt/ColonyGroundedSam2/infer.py \
+ && sed -i \
+    "/plt.imsave/a\\        print(f\"{img_path}: {len(input_boxes)} colonies detected\")" \
     /opt/ColonyGroundedSam2/infer.py
 
 # grounding_dino internals use "grounding_dino.groundingdino.*" imports
