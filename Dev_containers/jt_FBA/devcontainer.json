@@ -33,7 +33,7 @@
     }
   },
 
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postCreateCommand": "bash /workspaces/jon/.devcontainer/jt_FBA/post-create.sh",
 
   "forwardPorts": [8888],
   "portsAttributes": {
