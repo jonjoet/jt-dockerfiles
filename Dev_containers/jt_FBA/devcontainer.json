@@ -1,7 +1,9 @@
 {
   "name": "FBA Metabolic Modeling",
   "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
-
+"mounts": [
+    "source=/mnt/share_data2/JT,target=${containerWorkspaceFolder}/share_data2,type=bind"
+],
   "features": {
     "ghcr.io/devcontainers/features/node:1": {
       "version": "lts"
