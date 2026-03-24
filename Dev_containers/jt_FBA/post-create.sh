@@ -75,13 +75,17 @@ echo ""
 echo "==> Verifying key packages"
 python -c "
 from importlib.metadata import version as v
-import cobra;        print(f'  COBRApy      {cobra.__version__}')
-import mewpy;        print(f'  MEWpy        {mewpy.__version__}')
-import straindesign; print(f'  StrainDesign {v(\"straindesign\")}')
-import pyscipopt;    print(f'  PySCIPOpt    {pyscipopt.__version__}')
-import highspy;      print(f'  HiGHS        {highspy.__version__}')
-import escher;       print(f'  Escher       {escher.__version__}')
-import joblib;       print(f'  joblib       {joblib.__version__}')
+pkgs = [
+    ('COBRApy',      'cobra'),
+    ('MEWpy',        'mewpy'),
+    ('StrainDesign', 'straindesign'),
+    ('PySCIPOpt',    'pyscipopt'),
+    ('HiGHS',        'highspy'),
+    ('Escher',       'escher'),
+    ('joblib',       'joblib'),
+]
+for label, dist in pkgs:
+    print(f'  {label:14s} {v(dist)}')
 "
 
 echo ""
