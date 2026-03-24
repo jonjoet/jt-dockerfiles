@@ -55,8 +55,12 @@ pip install "escher>=1.8,<2"
 # ---------------------------------------------------------------------------
 echo "==> Installing Jupyter environment"
 pip install "jupyterlab>=4.0,<5"
+pip install "ipykernel>=6.29,<7"
 pip install "ipywidgets>=8.1,<9"
 pip install "jupyterlab-widgets>=3.0,<4"
+
+# Register the Python kernel so VS Code and JupyterLab can find it
+python -m ipykernel install --user --name python3 --display-name "Python 3"
 
 # ---------------------------------------------------------------------------
 # Supporting libraries
