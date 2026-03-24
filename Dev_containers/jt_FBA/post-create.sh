@@ -74,9 +74,10 @@ pip install "joblib>=1.3,<2"        # parallelism for embarrassingly parallel wo
 echo ""
 echo "==> Verifying key packages"
 python -c "
+from importlib.metadata import version as v
 import cobra;        print(f'  COBRApy      {cobra.__version__}')
 import mewpy;        print(f'  MEWpy        {mewpy.__version__}')
-import straindesign; print(f'  StrainDesign {straindesign.__version__}')
+import straindesign; print(f'  StrainDesign {v(\"straindesign\")}')
 import pyscipopt;    print(f'  PySCIPOpt    {pyscipopt.__version__}')
 import highspy;      print(f'  HiGHS        {highspy.__version__}')
 import escher;       print(f'  Escher       {escher.__version__}')
