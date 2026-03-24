@@ -11,6 +11,7 @@ echo "==> Installing LP/MILP solvers"
 
 # HiGHS: high-performance LP/MIP solver (used by COBRApy via optlang hybrid interface)
 pip install "highspy>=1.13,<2"
+pip install "osqp>=1.1.0,<2"  # HiGHS uses OSQP for quadratic programming subproblems (according to AI)
 
 # SCIP via PySCIPOpt: MILP solver for bilevel optimization & StrainDesign
 pip install "pyscipopt>=6.1,<7"
