@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "escher-cli"
+version = "0.1.0"
+description = "CLI tool for generating standalone Escher metabolic pathway HTML visualizations"
+requires-python = ">=3.10"
+dependencies = [
+    "escher==1.7.3",
+    "cobra>=0.29,<1",
+    "pandas>=1.5",
+    "markupsafe>=2.0,<2.1",
+]
+
+[project.scripts]
+escher-cli = "escher_cli.cli:main"
