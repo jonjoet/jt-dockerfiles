@@ -41,7 +41,7 @@ A reproducible environment for genome-scale metabolic modeling, flux balance ana
 
 | Package | Description |
 |---|---|
-| **Escher** | Web-based metabolic pathway map viewer (Jupyter widget). Nbextension enabled for inline rendering |
+| **Escher** | Web-based metabolic pathway map viewer (Jupyter widget via ipywidgets) |
 | **SBMLNetwork** | SBML Layout/Render visualization with flux overlays. Exports PNG/SVG/PDF. Requires system OpenGL/EGL libs (installed automatically) |
 | **SAMMI** | Semi-Automated Metabolic Map Illustrator. Force-directed bipartite graphs with subgraph parsing, metabolite shelving, and Escher-compatible export. Good for rapid exploration before investing in curated Escher maps |
 | **JupyterLab** | Notebook environment (port 8888 forwarded) |

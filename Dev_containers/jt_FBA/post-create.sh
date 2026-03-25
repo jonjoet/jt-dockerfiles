@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -76,9 +77,9 @@ pip install "jupyterlab-widgets>=3.0,<4"
 # Register the Python kernel so VS Code and JupyterLab can find it
 python -m ipykernel install --user --name python3 --display-name "Python 3"
 
-# Enable Escher widget in classic notebook (needed for inline map rendering)
-jupyter nbextension install --py escher --sys-prefix
-jupyter nbextension enable --py escher --sys-prefix
+# Escher's Jupyter widget works via ipywidgets in JupyterLab 4.x — no separate
+# nbextension step needed. The ipywidgets + jupyterlab-widgets packages above
+# provide the widget infrastructure that Escher hooks into.
 
 # ---------------------------------------------------------------------------
 # Supporting libraries
