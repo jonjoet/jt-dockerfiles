@@ -48,8 +48,9 @@ pip install "git+https://gitlab.com/wurssb/Modelling/sampling-tools.git"
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
-echo "==> Installing Escher for metabolic map visualization"
+echo "==> Installing Escher and sbmlnetwork for metabolic map visualization"
 pip install "escher>=1.8,<2"
+pip install "sbmlnetwork>=0.5.12,<1"
 
 # ---------------------------------------------------------------------------
 # Jupyter environment
