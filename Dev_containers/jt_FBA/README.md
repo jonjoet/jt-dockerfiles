@@ -9,7 +9,7 @@ A reproducible environment for genome-scale metabolic modeling, flux balance ana
 3. Use CFSA to compare sampled flux distributions between growth and production phenotypes
 4. Use StrainDesign (MILP-based: OptKnock, RobustKnock, MCS) and/or MEWpy (evolutionary algorithms) to identify candidate interventions
 5. Simulate and validate candidates with FBA, MOMA, or ROOM
-6. Visualize results on metabolic maps with Escher
+6. Visualize results on metabolic maps with Escher, SBMLNetwork, and SAMMI
 
 ## Installed packages
 
@@ -41,13 +41,15 @@ A reproducible environment for genome-scale metabolic modeling, flux balance ana
 
 | Package | Description |
 |---|---|
-| **Escher** | Web-based metabolic pathway map viewer (Jupyter widget) |
+| **Escher** | Web-based metabolic pathway map viewer (Jupyter widget). Nbextension enabled for inline rendering |
+| **SBMLNetwork** | SBML Layout/Render visualization with flux overlays. Exports PNG/SVG/PDF. Requires system OpenGL/EGL libs (installed automatically) |
+| **SAMMI** | Semi-Automated Metabolic Map Illustrator. Force-directed bipartite graphs with subgraph parsing, metabolite shelving, and Escher-compatible export. Good for rapid exploration before investing in curated Escher maps |
 | **JupyterLab** | Notebook environment (port 8888 forwarded) |
 | **ipywidgets** | Widget framework for Escher and interactive notebooks |
 
 ### Supporting libraries
 
-numpy, scipy, pandas, matplotlib, seaborn, sympy, joblib
+numpy, scipy, pandas, matplotlib, seaborn, sympy, joblib, xmltodict, requests
 
 ## Parallelism cheat sheet
 
@@ -92,6 +94,8 @@ Set this early in your notebooks for best performance.
 
 - **CFSA** is not on PyPI -- installed from GitLab. If it fails during container build, it's likely a packaging issue in their repo.
 - **StrainDesign needs Java** for EFM computations. If you see `JVMNotFoundException`, check `java -version` in the container.
+- **SBMLNetwork** depends on `skia-python`, which requires `libegl1`, `libgl1`, `libgles2`, and `libfontconfig1`. These are installed via `apt-get` in `post-create.sh`.
+- **SAMMI** requires an internet connection at render time (loads JS from the web). It opens visualizations in the browser rather than embedding inline in Jupyter.
 - **Version pins use floor-and-ceiling ranges** (e.g., `>=0.30,<1`) so patch fixes are picked up automatically on rebuild.
 
 ## Data mount

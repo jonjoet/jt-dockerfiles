@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+echo "==> Installing system libraries for SBMLNetwork (skia-python needs OpenGL/EGL)"
+sudo apt-get update && sudo apt-get install -y \
+    libegl1 \
+    libgl1 \
+    libgles2 \
+    libfontconfig1 \
+    && sudo rm -rf /var/lib/apt/lists/*
+
 echo "==> Upgrading pip and core build tools"
 python -m pip install --upgrade pip setuptools wheel
 
@@ -48,9 +59,10 @@ pip install "git+https://gitlab.com/wurssb/Modelling/sampling-tools.git"
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
-echo "==> Installing Escher and sbmlnetwork for metabolic map visualization"
+echo "==> Installing visualization tools (Escher, SBMLNetwork, SAMMI)"
 pip install "escher>=1.8,<2"
 pip install "sbmlnetwork>=0.5.12,<1"
+pip install "sammi"
 
 # ---------------------------------------------------------------------------
 # Jupyter environment
@@ -64,6 +76,10 @@ pip install "jupyterlab-widgets>=3.0,<4"
 # Register the Python kernel so VS Code and JupyterLab can find it
 python -m ipykernel install --user --name python3 --display-name "Python 3"
 
+# Enable Escher widget in classic notebook (needed for inline map rendering)
+jupyter nbextension install --py escher --sys-prefix
+jupyter nbextension enable --py escher --sys-prefix
+
 # ---------------------------------------------------------------------------
 # Supporting libraries
 # ---------------------------------------------------------------------------
@@ -73,6 +89,8 @@ pip install "python-libsbml>=5.20"  # SBML model I/O
 pip install "sympy>=1.12,<2"        # symbolic math
 pip install "seaborn>=0.13,<1"      # statistical plots (useful for flux sampling comparisons)
 pip install "joblib>=1.3,<2"        # parallelism for embarrassingly parallel workloads (knockout screens, etc.)
+pip install "xmltodict>=0.13"       # XML↔dict conversion (used by sbml2escher.py and general SBML wrangling)
+pip install "requests>=2.31,<3"    # HTTP client (sbml2escher.py dependency; useful for fetching BiGG maps)
 
 # ---------------------------------------------------------------------------
 # Verify
@@ -88,6 +106,8 @@ pkgs = [
     ('PySCIPOpt',    'pyscipopt'),
     ('HiGHS',        'highspy'),
     ('Escher',       'escher'),
+    ('SBMLNetwork',  'sbmlnetwork'),
+    ('SAMMI',        'sammi'),
     ('joblib',       'joblib'),
 ]
 for label, dist in pkgs:
