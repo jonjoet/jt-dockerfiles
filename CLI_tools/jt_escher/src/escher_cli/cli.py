@@ -44,6 +44,7 @@ def main(argv=None):
         model_json=model_json,
         reaction_data=reaction_data,
         metabolite_data=metabolite_data,
+        enable_keys=True,
     )
     builder.save_html(args.output)
     print(f"Saved: {args.output}", file=sys.stderr)
