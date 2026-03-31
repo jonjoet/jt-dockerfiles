@@ -1,6 +1,6 @@
 # Primer3Plus dPCR Server
 
-A containerized Primer3Plus instance for dPCR primer design. Runs the Primer3Plus Python server and npm dev client inside a Docker container.
+A self-contained Docker image for dPCR primer design. Builds primer3 and primer3plus from source, then runs the Flask API server and a static file server under supervisord.
 
 ## Setup on the VM
 

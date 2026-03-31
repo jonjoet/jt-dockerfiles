@@ -1,19 +1,42 @@
-FROM jt/temp4:latest
+FROM ubuntu:22.04
 
-# 1. Put primer3 binaries on PATH
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
+    git \
+    python3 \
+    python3-flask \
+    python3-flask-cors \
+    nodejs \
+    npm \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build primer3 from source
+RUN git clone --depth 1 https://github.com/primer3-org/primer3.git /primer3 && \
+    cd /primer3/src && \
+    make
+
 ENV PATH="/primer3/src:${PATH}"
 
-# 2. Install supervisord
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends supervisor && \
-    rm -rf /var/lib/apt/lists/*
+# Clone primer3plus
+RUN git clone --depth 1 https://github.com/primer3-org/primer3plus.git /primer3plus
 
-# 3. Build the frontend to static files instead of running Parcel dev server
+# Create data and log directories the server expects
+RUN mkdir -p /primer3plus/data /primer3plus/log
+
+# Install client dependencies and build static files
 RUN cd /primer3plus/client && \
+    npm install && \
     echo 'API_URL=http://localhost:3300/api/v1' > .env.production && \
-    npx parcel build src/index.html --dist-dir /primer3plus/client/dist --no-source-maps
+    echo 'HELP_LINK_URL=primer3plusHelp.html' >> .env.production && \
+    echo 'INDEX_LINK_URL=http://localhost:1234/index.html' >> .env.production && \
+    npx parcel build src/index.html --no-cache --no-source-maps --public-url ./
 
-# 4. Copy supervisord config
+# Copy supervisord config
 COPY supervisord.conf /etc/supervisor/conf.d/primer3plus.conf
 
 EXPOSE 1234 3300
