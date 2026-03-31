@@ -32,12 +32,10 @@ if submitted:
         work_dir = tempfile.mkdtemp(prefix="chopchop_", dir="/tmp")
 
         try:
-            # Write uploaded FASTA to temp dir
             fasta_path = os.path.join(work_dir, fasta_file.name)
             with open(fasta_path, "wb") as f:
                 f.write(fasta_file.getvalue())
 
-            # Write GenBank if provided
             genbank_path = None
             if genbank_file is not None:
                 genbank_path = os.path.join(work_dir, genbank_file.name)
@@ -70,35 +68,18 @@ if submitted:
                 st.code(result.stderr, language="text")
             else:
                 tsv_text = result.stdout
+                tsv_filename = f"{stem}_guides.tsv"
+
                 if result.stderr.strip():
-                    with st.expander("CHOPCHOP warnings (stderr)"):
-                        st.code(result.stderr, language="text")
+                    st.session_state["chopchop_warnings"] = result.stderr
 
                 if not tsv_text.strip():
                     st.warning("CHOPCHOP returned no results.")
                 else:
-                    # --- TSV download ---
-                    tsv_filename = f"{stem}_guides.tsv"
-                    st.download_button(
-                        "Download results TSV",
-                        data=tsv_text,
-                        file_name=tsv_filename,
-                        mime="text/tab-separated-values",
-                    )
+                    st.session_state["tsv_text"] = tsv_text
+                    st.session_state["tsv_filename"] = tsv_filename
+                    st.session_state["annotated_gb"] = None
 
-                    # --- Display table ---
-                    with st.expander("Preview results", expanded=True):
-                        lines = tsv_text.strip().split("\n")
-                        if len(lines) > 1:
-                            header = lines[0].split("\t")
-                            rows = [line.split("\t") for line in lines[1:]]
-                            import pandas as pd
-                            df = pd.DataFrame(rows, columns=header)
-                            st.dataframe(df, use_container_width=True)
-                        else:
-                            st.code(tsv_text, language="text")
-
-                    # --- GenBank annotation ---
                     if genbank_path is not None:
                         annotated_path = os.path.join(work_dir, f"{stem}_annotated.gb")
                         tsv_path = os.path.join(work_dir, tsv_filename)
@@ -111,16 +92,45 @@ if submitted:
                         )
 
                         if annot_result.returncode != 0:
-                            st.error("GenBank annotation failed.")
-                            st.code(annot_result.stderr, language="text")
+                            st.session_state["annot_error"] = annot_result.stderr
                         else:
                             with open(annotated_path, "r") as f:
-                                annotated_text = f.read()
-                            st.download_button(
-                                "Download annotated GenBank",
-                                data=annotated_text,
-                                file_name=f"{stem}_annotated.gb",
-                                mime="application/octet-stream",
-                            )
+                                st.session_state["annotated_gb"] = f.read()
+                            st.session_state["annotated_filename"] = f"{stem}_annotated.gb"
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+# --- Display results (persists across reruns) ---
+if "tsv_text" in st.session_state:
+    if "chopchop_warnings" in st.session_state:
+        with st.expander("CHOPCHOP warnings (stderr)"):
+            st.code(st.session_state["chopchop_warnings"], language="text")
+
+    st.download_button(
+        "Download results TSV",
+        data=st.session_state["tsv_text"],
+        file_name=st.session_state["tsv_filename"],
+        mime="text/tab-separated-values",
+    )
+
+    if st.session_state.get("annotated_gb") is not None:
+        st.download_button(
+            "Download annotated GenBank",
+            data=st.session_state["annotated_gb"],
+            file_name=st.session_state["annotated_filename"],
+            mime="application/octet-stream",
+        )
+    elif "annot_error" in st.session_state:
+        st.error("GenBank annotation failed.")
+        st.code(st.session_state["annot_error"], language="text")
+
+    with st.expander("Preview results", expanded=True):
+        lines = st.session_state["tsv_text"].strip().split("\n")
+        if len(lines) > 1:
+            import pandas as pd
+            header = lines[0].split("\t")
+            rows = [line.split("\t") for line in lines[1:]]
+            df = pd.DataFrame(rows, columns=header)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.code(st.session_state["tsv_text"], language="text")
