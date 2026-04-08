@@ -1,0 +1,53 @@
+{
+  "name": "LaTeX",
+  "image": "texlive/texlive:latest",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "James-Yu.latex-workshop",
+        "tecosaur.latex-utilities",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "latex-workshop.latex.recipe.default": "latexmk (lualatex)",
+        "latex-workshop.latex.recipes": [
+          {
+            "name": "latexmk (lualatex)",
+            "tools": ["lualatexmk"]
+          },
+          {
+            "name": "latexmk (pdflatex)",
+            "tools": ["pdflatexmk"]
+          }
+        ],
+        "latex-workshop.latex.tools": [
+          {
+            "name": "lualatexmk",
+            "command": "latexmk",
+            "args": [
+              "-lualatex",
+              "-synctex=1",
+              "-interaction=nonstopmode",
+              "-file-line-error",
+              "-outdir=%OUTDIR%",
+              "%DOC%"
+            ]
+          },
+          {
+            "name": "pdflatexmk",
+            "command": "latexmk",
+            "args": [
+              "-pdf",
+              "-synctex=1",
+              "-interaction=nonstopmode",
+              "-file-line-error",
+              "-outdir=%OUTDIR%",
+              "%DOC%"
+            ]
+          }
+        ],
+        "editor.wordWrap": "on"
+      }
+    }
+  }
+}

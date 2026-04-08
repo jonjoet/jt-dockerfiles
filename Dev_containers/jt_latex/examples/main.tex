@@ -1,0 +1,31 @@
+\documentclass[a4paper,12pt]{article}
+
+\usepackage{fontspec}
+\usepackage[english]{babel}
+\usepackage{csquotes}
+\usepackage[
+  backend=biber,
+  style=authoryear,
+  sorting=nyt,
+  urldate=long
+]{biblatex}
+
+\addbibresource{references.bib}
+
+\usepackage{hyperref}
+
+\title{Your Title Here}
+\author{Your Name}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This is a starter document. You can cite sources like this \parencite{knuth1984} or inline like \textcite{knuth1984}.
+
+\printbibliography
+
+\end{document}
