@@ -6,12 +6,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ncbi-blast+ \
         prodigal \
         infernal \
+        dpkg-dev \
         python3 \
         python3-pip \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --break-system-packages plasann
+RUN pip install --no-cache-dir --break-system-packages "matplotlib<3.9" plasann
 
 VOLUME ["/data", "/root/.plasann"]
 
