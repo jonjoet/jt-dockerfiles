@@ -16,7 +16,9 @@ Edit the variables at the top of `run_plasann.sh` (`INPUT_FILE`, `OUTPUT_DIR`, `
 ./run_plasann.sh
 ```
 
-On first run, `BUILD_IF_MISSING=1` builds `plasann:latest` automatically. The script mounts the input file's parent dir read-only at `/data/input`, `OUTPUT_DIR` at `/data/output`, and the `plasann-db` named volume at `/root/.plasann`, then invokes `PlasAnn -i /data/input/<name> -o /data/output -t <INPUT_TYPE>`.
+On first run, `BUILD_IF_MISSING=1` builds `plasann:latest` automatically. The script mounts the input file's parent dir at `/data/input`, `OUTPUT_DIR` at `/data/output`, and the `plasann-db` named volume at `/root/.plasann`, then invokes `PlasAnn -i /data/input/<name> -o /data/output -t <INPUT_TYPE>`.
+
+> Note: the input dir is mounted read-write (not `:ro`) because PlasAnn writes Prodigal's intermediate `.gbk` file next to the input FASTA.
 
 For one-off runs with different PlasAnn options, you can also bypass the script entirely and call `docker run ... plasann:latest PlasAnn ...` directly — the image has no entrypoint, so any PlasAnn invocation (or `bash`) works.
 
@@ -28,7 +30,7 @@ A named volume is a Docker-managed persistent directory that lives outside the i
 
 ```bash
 docker run --rm \
-    -v "$INPUT_DIR:/data/input:ro" \      # input FASTA dir (read-only)
+    -v "$INPUT_DIR:/data/input" \         # input FASTA dir (rw; PlasAnn writes .gbk beside input)
     -v "$OUTPUT_DIR:/data/output" \       # where annotations land
     -v plasann-db:/root/.plasann \        # <-- named volume for the DB
     plasann:latest \

@@ -43,7 +43,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 docker run --rm \
-    -v "$INPUT_DIR:/data/input:ro" \
+    -v "$INPUT_DIR:/data/input" \
     -v "$OUTPUT_DIR:/data/output" \
     -v "$VOLUME:/root/.plasann" \
     "$IMAGE" \
