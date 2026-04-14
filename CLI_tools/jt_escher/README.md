@@ -2,6 +2,10 @@
 
 CLI tool for generating standalone Escher metabolic pathway HTML files. Pins **escher 1.7.3** (later versions broke drag-to-merge metabolites).
 
+Output HTMLs are **fully self-contained**: the escher JS bundle is inlined, so the files render offline and don't break if the escher CDN ever drops this version. Expect ~1 MB per file.
+
+Escher 1.7.3 itself is vendored as an sdist under `vendor/` and installed from there, so the build doesn't depend on PyPI continuing to serve it.
+
 ## Quick Start (Docker)
 
 ```bash
@@ -22,7 +26,10 @@ docker run --rm -v $(pwd):/data escher-cli output.html \
 
 ## Quick Start (pip)
 
+`escher` is not in `pyproject.toml` dependencies — install the vendored sdist first, then the CLI:
+
 ```bash
+pip install vendor/Escher-1.7.3.tar.gz
 pip install .
 escher-cli output.html --map-name "iJO1366.Central metabolism" --reaction-data fluxes.csv
 ```
@@ -76,3 +83,7 @@ Flat `{id: value}` mapping.
 ## Why 1.7.3?
 
 Escher versions after 1.7.3 broke the ability to merge metabolites by dragging in the interactive editor. This is tracked in open issues on the escher GitHub repo. Version 1.7.3 is the last known-good release for this feature.
+
+## How standalone output works
+
+Escher 1.7.3's `Builder.save_html()` hard-codes a `<script src="https://unpkg.com/escher@1.7.3/dist/escher.min.js">` tag (1.7.3 has no `js_source` parameter — that was added later). After calling `save_html()`, the CLI reads `escher/static/escher.min.js` from the installed escher package and replaces the CDN tag with an inline `<script>…</script>`. See `inline_escher_js` in `src/escher_cli/cli.py`.

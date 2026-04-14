@@ -2,10 +2,35 @@
 
 import argparse
 import sys
+from importlib.resources import files
+from pathlib import Path
 
 from escher import Builder
 
 from .data_loader import load_data_file, load_map, load_model
+
+CDN_SCRIPT_TAG = (
+    '<script src="https://unpkg.com/escher@1.7.3/dist/escher.min.js"></script>'
+)
+
+
+def inline_escher_js(html_path):
+    """Replace the CDN <script> tag with an inlined copy of escher.min.js.
+
+    Escher 1.7.3's save_html() always emits the CDN tag; we read the JS bundle
+    shipped inside the escher package and swap it in so the HTML works offline
+    and keeps working if unpkg stops serving this version.
+    """
+    js = files("escher").joinpath("static/escher.min.js").read_text(encoding="utf-8")
+    path = Path(html_path)
+    html = path.read_text(encoding="utf-8")
+    if html.count(CDN_SCRIPT_TAG) != 1:
+        raise RuntimeError(
+            f"Expected exactly one CDN <script> tag in {html_path}; "
+            "escher template may have changed."
+        )
+    html = html.replace(CDN_SCRIPT_TAG, f"<script>{js}</script>")
+    path.write_text(html, encoding="utf-8")
 
 
 def parse_args(argv=None):
@@ -47,6 +72,7 @@ def main(argv=None):
         enable_keys=True,
     )
     builder.save_html(args.output)
+    inline_escher_js(args.output)
     print(f"Saved: {args.output}", file=sys.stderr)
 
 
