@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Assembly Contig Filter (with Reference + Rename)</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface2: #f0f2f5;
+    --border: #d0d7de;
+    --border-active: #a8b1ba;
+    --text: #1f2328;
+    --text-dim: #57606a;
+    --text-muted: #8b949e;
+    --accent: #0969da;
+    --accent-dim: #ddf4ff;
+    --green: #1a7f37;
+    --green-dim: #dafbe1;
+    --red: #cf222e;
+    --red-dim: #ffebe9;
+    --yellow: #9a6700;
+    --orange: #bc4c00;
+    --purple: #8250df;
+    --ref-accent: #8250df;
+    --ref-dim: #e8dff5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+
+  .app-header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+  }
+
+  .app-header h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .app-header h1 span { color: var(--accent); }
+
+  .app-header .subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: auto;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .main-content { padding: 24px; max-width: 1800px; margin: 0 auto; }
+
+  /* Upload zone */
+  .upload-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .upload-box {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 32px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--surface);
+    position: relative;
+  }
+
+  .upload-box:hover { border-color: var(--border-active); background: var(--surface2); }
+  .upload-box.loaded { border-color: var(--green); border-style: solid; }
+  .upload-box.ref-loaded { border-color: var(--ref-accent); border-style: solid; }
+
+  .upload-box input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+
+  .upload-box .file-icon {
+    font-size: 28px;
+    margin-bottom: 8px;
+    opacity: 0.5;
+  }
+
+  .upload-box.loaded .file-icon, .upload-box.ref-loaded .file-icon { opacity: 1; }
+
+  .upload-box .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  .upload-box .hint {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .upload-box .file-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--green);
+    margin-top: 8px;
+    word-break: break-all;
+  }
+
+  .upload-box .file-name.ref-color { color: var(--ref-accent); }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 24px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .stat {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .stat strong {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .stat.green strong { color: var(--green); }
+  .stat.red strong { color: var(--red); }
+  .stat.ref strong { color: var(--ref-accent); }
+
+  .stats-divider {
+    width: 1px;
+    height: 24px;
+    background: var(--border);
+  }
+
+  /* Controls bar */
+  .controls-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .search-box {
+    flex: 1;
+    min-width: 200px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  .search-box:focus { border-color: var(--accent); }
+  .search-box::placeholder { color: var(--text-muted); }
+
+  .length-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .length-filter input {
+    width: 100px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    outline: none;
+  }
+
+  .length-filter input:focus { border-color: var(--accent); }
+
+  button {
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.1s;
+    white-space: nowrap;
+  }
+
+  button:hover { background: var(--surface2); border-color: var(--border-active); }
+
+  button.primary {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  button.primary:hover { background: #c8e6fd; }
+
+  button.danger {
+    border-color: var(--red);
+    color: var(--red);
+  }
+
+  button.success {
+    background: var(--green-dim);
+    border-color: var(--green);
+    color: var(--green);
+  }
+
+  button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  /* Table */
+  .table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+    max-height: 65vh;
+    overflow-y: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  thead th {
+    background: var(--surface2);
+    padding: 10px 12px;
+    text-align: left;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  thead th:hover { color: var(--text); }
+  thead th.sorted { color: var(--accent); }
+  thead th .sort-arrow { font-size: 10px; margin-left: 4px; }
+  thead th.ref-col { color: var(--ref-accent); opacity: 0.7; }
+  thead th.ref-col:hover { opacity: 1; }
+  thead th.ref-col.nosort { cursor: default; }
+
+  /* Separator between query and ref columns */
+  th.ref-separator, td.ref-separator {
+    border-left: 2px solid var(--ref-dim);
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.08s;
+  }
+
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody tr.excluded { opacity: 0.4; }
+
+  tbody td {
+    padding: 8px 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  td.seq-name {
+    font-weight: 500;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+  }
+
+  td.seq-name.editable { cursor: text; position: relative; }
+  td.seq-name.editable:hover .edit-hint { opacity: 1; }
+  .edit-hint { opacity: 0; transition: opacity 0.15s; margin-left: 4px; font-size: 10px; color: var(--text-muted); }
+  td.seq-name.renamed { border-left: 3px solid var(--yellow); }
+  .original-name { font-size: 10px; color: var(--text-muted); display: block; font-weight: 400; }
+  .reset-rename { cursor: pointer; color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+  .reset-rename:hover { color: var(--red); }
+  .rename-input {
+    width: 100%;
+    padding: 2px 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    outline: none;
+    background: var(--surface);
+    color: var(--text);
+    box-sizing: border-box;
+  }
+
+  .bulk-rename-panel {
+    padding: 10px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+
+  .bulk-rename-panel .bulk-rename-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .bulk-rename-panel input {
+    flex: 0 0 150px;
+    min-width: 0;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    outline: none;
+  }
+
+  .bulk-rename-panel input:focus { border-color: var(--accent); }
+  .bulk-rename-panel input::placeholder { color: var(--text-muted); }
+  .bulk-rename-sep { color: var(--text-muted); font-size: 11px; font-family: 'IBM Plex Mono', monospace; }
+
+  td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+
+  td.ref-text {
+    color: var(--ref-accent);
+    opacity: 0.7;
+  }
+
+  /* Length bar */
+  .len-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .len-bar-track {
+    width: 80px;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .len-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  .len-bar.ref { background: var(--ref-accent); }
+
+  /* GC bar */
+  .gc-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .gc-bar-track {
+    width: 50px;
+    height: 6px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .gc-bar {
+    height: 100%;
+    border-radius: 3px;
+  }
+
+  /* Checkbox */
+  .cb-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .cb-wrap input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--green);
+    cursor: pointer;
+  }
+
+  /* N50 highlight */
+  .n50-marker {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 3px;
+    margin-left: 6px;
+  }
+
+  /* Export section */
+  .export-section {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .export-section .export-info {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 64px 24px;
+    color: var(--text-muted);
+  }
+
+  .empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+  .empty-state p { font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .upload-area { grid-template-columns: 1fr; }
+    .stats-bar { gap: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <h1><span>&gt;</span> assembly-filter <small style="color:var(--ref-accent);font-size:12px;font-weight:400;">+ reference + rename</small></h1>
+  <span class="subtitle">client-side contig filtering · no data leaves your browser</span>
+</header>
+
+<div class="main-content">
+  <div class="upload-area">
+    <label class="upload-box" id="fastaBox">
+      <input type="file" id="fastaInput" accept=".fasta,.fa,.fna,.fsa,.fas">
+      <div class="file-icon">🧬</div>
+      <div class="label">Multi-FASTA assembly</div>
+      <div class="hint">.fasta, .fa, .fna</div>
+      <div class="file-name" id="fastaFileName"></div>
+    </label>
+    <label class="upload-box" id="gffBox">
+      <input type="file" id="gffInput" accept=".gff,.gff3,.gtf">
+      <div class="file-icon">📋</div>
+      <div class="label">GFF annotations</div>
+      <div class="hint">.gff, .gff3 (optional)</div>
+      <div class="file-name" id="gffFileName"></div>
+    </label>
+    <label class="upload-box" id="refBox">
+      <input type="file" id="refInput" accept=".fasta,.fa,.fna,.fsa,.fas">
+      <div class="file-icon">📐</div>
+      <div class="label">Reference FASTA</div>
+      <div class="hint">.fasta, .fa, .fna (optional, display only)</div>
+      <div class="file-name ref-color" id="refFileName"></div>
+    </label>
+  </div>
+
+  <div id="workspace" style="display:none;">
+    <div class="stats-bar" id="statsBar"></div>
+
+    <div class="controls-bar">
+      <input type="text" class="search-box" id="searchBox" placeholder="Search names (original &amp; renamed)…">
+      <div class="length-filter">
+        <span>Min length:</span>
+        <input type="number" id="minLenInput" placeholder="e.g. 1000" min="0">
+      </div>
+      <button onclick="selectByLength()">☑ Select ≥ min</button>
+      <button onclick="selectAll()">Select all</button>
+      <button onclick="selectNone()" class="danger">Deselect all</button>
+      <button onclick="invertSelection()">Invert</button>
+      <button onclick="toggleBulkRename()">✎ Bulk Rename</button>
+      <button onclick="resetAllRenames()" id="resetRenamesBtn" style="display:none;" class="danger">Reset renames</button>
+    </div>
+
+    <div class="bulk-rename-panel" id="bulkRenamePanel" style="display:none;">
+      <div class="bulk-rename-row">
+        <input type="text" id="renamePrefix" placeholder="Add prefix…">
+        <input type="text" id="renameSuffix" placeholder="Add suffix…">
+        <span class="bulk-rename-sep">or</span>
+        <input type="text" id="renameFind" placeholder="Find…">
+        <input type="text" id="renameReplace" placeholder="Replace with…">
+        <button onclick="applyBulkRename()" class="primary">Apply to selected</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr id="tableHead"></tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="export-section">
+      <div class="export-info" id="exportInfo"></div>
+      <button class="success" onclick="exportFiles()" id="exportBtn">⬇ Export filtered files</button>
+    </div>
+  </div>
+
+  <div class="empty-state" id="emptyState">
+    <div class="icon">🧬</div>
+    <p>Load a multi-FASTA file to get started.<br>GFF is optional but recommended. Reference FASTA is for comparison only.</p>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let sequences = [];      // { name, length, gcContent, sequence, selected, desc, renamed }
+let refSequences = [];   // { name, length, gcContent } — display only, never exported
+let gffLines = [];
+let gffMap = {};
+let gffHeader = [];
+let sortCol = 'length';
+let sortDir = -1;         // -1 = desc
+let maxLen = 0;
+let refMaxLen = 0;
+let fastaFileName = '';
+let gffFileName = '';
+
+// ── Parsing ──
+function parseFasta(text) {
+  const seqs = [];
+  let current = null;
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    if (line.startsWith('>')) {
+      if (current) seqs.push(current);
+      const header = line.slice(1).trim();
+      const spaceIdx = header.search(/\s/);
+      const name = spaceIdx === -1 ? header : header.slice(0, spaceIdx);
+      const desc = spaceIdx === -1 ? '' : header.slice(spaceIdx).trim();
+      current = { name, desc, chunks: [] };
+    } else if (current && line.trim()) {
+      current.chunks.push(line.trim());
+    }
+  }
+  if (current) seqs.push(current);
+
+  return seqs.map(s => {
+    const seq = s.chunks.join('');
+    const upper = seq.toUpperCase();
+    let gc = 0, total = 0;
+    for (let i = 0; i < upper.length; i++) {
+      const c = upper[i];
+      if (c === 'G' || c === 'C') { gc++; total++; }
+      else if (c === 'A' || c === 'T' || c === 'U') { total++; }
+    }
+    return {
+      name: s.name,
+      desc: s.desc,
+      sequence: seq,
+      length: seq.length,
+      gcContent: total > 0 ? gc / total : 0,
+      selected: true,
+      renamed: null
+    };
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function displayName(seq) { return seq.renamed || seq.name; }
+
+function parseGff(text) {
+  const lines = text.split(/\r?\n/);
+  const header = [];
+  const features = [];
+  const map = {};
+  for (const line of lines) {
+    if (line.startsWith('#') || line.trim() === '') {
+      header.push(line);
+    } else {
+      features.push(line);
+      const seqid = line.split('\t')[0];
+      if (seqid) map[seqid] = (map[seqid] || 0) + 1;
+    }
+  }
+  return { header, features, map };
+}
+
+// ── File loading ──
+document.getElementById('fastaInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  fastaFileName = file.name;
+  document.getElementById('fastaFileName').textContent = file.name;
+  document.getElementById('fastaBox').classList.add('loaded');
+  const text = await file.text();
+  sequences = parseFasta(text);
+  maxLen = Math.max(...sequences.map(s => s.length), 1);
+  buildUI();
+});
+
+document.getElementById('gffInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  gffFileName = file.name;
+  document.getElementById('gffFileName').textContent = file.name;
+  document.getElementById('gffBox').classList.add('loaded');
+  const text = await file.text();
+  const parsed = parseGff(text);
+  gffHeader = parsed.header;
+  gffLines = parsed.features;
+  gffMap = parsed.map;
+  buildUI();
+});
+
+document.getElementById('refInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('refFileName').textContent = file.name;
+  document.getElementById('refBox').classList.add('ref-loaded');
+  const text = await file.text();
+  refSequences = parseFasta(text);
+  refMaxLen = Math.max(...refSequences.map(s => s.length), 1);
+  buildUI();
+});
+
+// ── N50 calculation ──
+function calcN50(seqs) {
+  const lens = seqs.map(s => s.length).sort((a, b) => b - a);
+  const total = lens.reduce((a, b) => a + b, 0);
+  let cumul = 0;
+  for (const l of lens) {
+    cumul += l;
+    if (cumul >= total / 2) return l;
+  }
+  return 0;
+}
+
+// ── UI ──
+function buildUI() {
+  if (sequences.length === 0) return;
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('workspace').style.display = '';
+  renderStats();
+  renderTable();
+}
+
+function renderStats() {
+  const selected = sequences.filter(s => s.selected);
+  const totalBp = sequences.reduce((a, s) => a + s.length, 0);
+  const selBp = selected.reduce((a, s) => a + s.length, 0);
+  const n50 = calcN50(selected);
+  const gffFeats = selected.reduce((a, s) => a + (gffMap[s.name] || 0), 0);
+
+  let html = `
+    <div class="stat green"><strong>${selected.length}</strong> / ${sequences.length} seqs selected</div>
+    <div class="stat green"><strong>${fmtBp(selBp)}</strong> / ${fmtBp(totalBp)} bp</div>
+    <div class="stat"><strong>${fmtBp(n50)}</strong> N50 (selected)</div>
+    ${gffLines.length ? `<div class="stat"><strong>${gffFeats.toLocaleString()}</strong> GFF features</div>` : ''}
+  `;
+
+  const renamedCount = sequences.filter(s => s.renamed).length;
+  if (renamedCount > 0) {
+    html += `<div class="stat" style="color:var(--yellow)"><strong>${renamedCount}</strong> renamed</div>`;
+  }
+
+  document.getElementById('resetRenamesBtn').style.display = renamedCount > 0 ? '' : 'none';
+
+  if (refSequences.length) {
+    const refTotalBp = refSequences.reduce((a, s) => a + s.length, 0);
+    const refN50 = calcN50(refSequences);
+    html += `
+      <div class="stats-divider"></div>
+      <div class="stat ref"><strong>${refSequences.length}</strong> ref seqs</div>
+      <div class="stat ref"><strong>${fmtBp(refTotalBp)}</strong> ref total</div>
+      <div class="stat ref"><strong>${fmtBp(refN50)}</strong> ref N50</div>
+    `;
+  }
+
+  document.getElementById('statsBar').innerHTML = html;
+
+  document.getElementById('exportInfo').innerHTML =
+    `Output: <strong>${selected.length}</strong> sequences · <strong>${fmtBp(selBp)}</strong>` +
+    (gffLines.length ? ` · <strong>${gffFeats.toLocaleString()}</strong> features` : '') +
+    (refSequences.length ? ' · <em style="color:var(--text-muted)">reference not included in export</em>' : '');
+}
+
+function fmtBp(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' Gb';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + ' Mb';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' kb';
+  return n.toLocaleString() + ' bp';
+}
+
+function sortedSequences() {
+  return [...sequences].sort((a, b) => {
+    let va, vb;
+    if (sortCol === '_features') {
+      va = gffMap[a.name] || 0;
+      vb = gffMap[b.name] || 0;
+    } else if (sortCol === 'name') {
+      va = displayName(a);
+      vb = displayName(b);
+    } else {
+      va = a[sortCol];
+      vb = b[sortCol];
+    }
+    if (typeof va === 'string') return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+}
+
+function sortedRefSequences() {
+  // Apply the same sort column and direction to reference sequences.
+  // Reference has no GFF features, no selection — sort by the same numeric/string key,
+  // falling back to length for columns that don't exist on reference.
+  const col = (sortCol === '_features') ? 'length' : sortCol;
+  return [...refSequences].sort((a, b) => {
+    let va = a[col], vb = b[col];
+    if (va === undefined) va = a.length;
+    if (vb === undefined) vb = b.length;
+    if (typeof va === 'string') return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+}
+
+function renderTable() {
+  const filter = document.getElementById('searchBox').value.toLowerCase();
+  const n50val = calcN50(sequences.filter(s => s.selected));
+  const hasRef = refSequences.length > 0;
+  const combinedMaxLen = Math.max(maxLen, refMaxLen, 1);
+
+  function matchesFilter(s) {
+    if (!filter) return true;
+    return s.name.toLowerCase().includes(filter) || (s.renamed && s.renamed.toLowerCase().includes(filter));
+  }
+
+  function getVisibleSequences() {
+    return sequences.filter(matchesFilter);
+  }
+
+  // Build header
+  const cols = [
+    { key: '_cb', label: '☑', nosort: true },
+    { key: 'name', label: 'Sequence' },
+    { key: 'length', label: 'Length' },
+    { key: 'gcContent', label: 'GC %' },
+  ];
+  if (gffLines.length) cols.push({ key: '_features', label: 'Features' });
+  cols.push({ key: 'desc', label: 'Description' });
+
+  const headRow = document.getElementById('tableHead');
+  let headHTML = cols.map(c => {
+    if (c.nosort) {
+      const allVis = getVisibleSequences().every(s => s.selected);
+      const noneVis = getVisibleSequences().every(s => !s.selected);
+      const headChecked = allVis ? 'checked' : '';
+      const headIndet = (!allVis && !noneVis) ? 'data-indeterminate' : '';
+      return `<th style="width:40px"><div class="cb-wrap"><input type="checkbox" id="headCb" onchange="toggleAllVisible(this.checked)" ${headChecked} ${headIndet}></div></th>`;
+    }
+    const sorted = sortCol === c.key;
+    const arrow = sorted ? (sortDir === 1 ? '▲' : '▼') : '';
+    return `<th class="${sorted ? 'sorted' : ''}" onclick="doSort('${c.key}')">${c.label}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join('');
+
+  if (hasRef) {
+    headHTML += `<th class="ref-col ref-separator nosort" style="cursor:default">Ref Rank</th>`;
+    headHTML += `<th class="ref-col nosort" style="cursor:default">Ref Name</th>`;
+    headHTML += `<th class="ref-col nosort" style="cursor:default">Ref Length</th>`;
+    headHTML += `<th class="ref-col nosort" style="cursor:default">Ref GC %</th>`;
+  }
+
+  headRow.innerHTML = headHTML;
+
+  // Sort both lists
+  const sorted = sortedSequences();
+  const refSorted = hasRef ? sortedRefSequences() : [];
+
+  // Filter query sequences and track which row index each visible row maps to
+  const visibleRows = [];
+  let visIdx = 0;
+  for (const seq of sorted) {
+    if (!matchesFilter(seq)) continue;
+    visibleRows.push({ seq, visIdx });
+    visIdx++;
+  }
+
+  // Render rows
+  const tbody = document.getElementById('tableBody');
+  const rows = [];
+  for (const { seq, visIdx: vi } of visibleRows) {
+    const idx = sequences.indexOf(seq);
+    const pctLen = (seq.length / combinedMaxLen * 100).toFixed(1);
+    const gcPct = (seq.gcContent * 100).toFixed(1);
+    const gcColor = seq.gcContent < 0.35 ? 'var(--accent)' : seq.gcContent > 0.65 ? 'var(--orange)' : 'var(--green)';
+    const feats = gffMap[seq.name] || 0;
+    const isN50 = seq.length >= n50val && seq.selected;
+
+    let row = `<tr class="${seq.selected ? '' : 'excluded'}">`;
+    row += `<td><div class="cb-wrap"><input type="checkbox" ${seq.selected ? 'checked' : ''} onchange="toggleSeqIdx(${idx}, this.checked)"></div></td>`;
+    const dName = displayName(seq);
+    const isRenamed = !!seq.renamed;
+    let nameContent = `<span class="display-name">${escapeHtml(dName)}</span>`;
+    if (isN50) nameContent += '<span class="n50-marker">≥N50</span>';
+    if (isRenamed) {
+      nameContent += `<span class="original-name">was: ${escapeHtml(seq.name)}</span>`;
+      nameContent += `<span class="reset-rename" onclick="event.stopPropagation(); resetRename(${idx})" title="Reset to original name">✕</span>`;
+    } else {
+      nameContent += '<span class="edit-hint">✎</span>';
+    }
+    row += `<td class="seq-name editable ${isRenamed ? 'renamed' : ''}" title="${escapeHtml(isRenamed ? 'Original: ' + seq.name : dName)}" onclick="startRename(this, ${idx})">${nameContent}</td>`;
+    row += `<td class="numeric"><div class="len-cell"><span>${seq.length.toLocaleString()}</span><div class="len-bar-track"><div class="len-bar" style="width:${pctLen}%"></div></div></div></td>`;
+    row += `<td class="numeric"><div class="gc-cell"><span>${gcPct}%</span><div class="gc-bar-track"><div class="gc-bar" style="width:${gcPct}%;background:${gcColor}"></div></div></div></td>`;
+    if (gffLines.length) row += `<td class="numeric">${feats.toLocaleString()}</td>`;
+    row += `<td style="color:var(--text-muted);max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${seq.desc}">${seq.desc || '—'}</td>`;
+
+    if (hasRef) {
+      const ref = refSorted[vi];
+      if (ref) {
+        const refPctLen = (ref.length / combinedMaxLen * 100).toFixed(1);
+        const refGcPct = (ref.gcContent * 100).toFixed(1);
+        const refGcColor = ref.gcContent < 0.35 ? 'var(--accent)' : ref.gcContent > 0.65 ? 'var(--orange)' : 'var(--ref-accent)';
+        row += `<td class="ref-text ref-separator numeric">${vi + 1}</td>`;
+        row += `<td class="ref-text seq-name" title="${ref.name}">${ref.name}</td>`;
+        row += `<td class="ref-text numeric"><div class="len-cell"><span>${ref.length.toLocaleString()}</span><div class="len-bar-track"><div class="len-bar ref" style="width:${refPctLen}%"></div></div></div></td>`;
+        row += `<td class="ref-text numeric"><div class="gc-cell"><span>${refGcPct}%</span><div class="gc-bar-track"><div class="gc-bar" style="width:${refGcPct}%;background:${refGcColor}"></div></div></div></td>`;
+      } else {
+        row += `<td class="ref-separator"></td><td></td><td></td><td></td>`;
+      }
+    }
+
+    row += `</tr>`;
+    rows.push(row);
+  }
+  tbody.innerHTML = rows.join('');
+
+  // Set indeterminate state on header checkbox
+  const headCb = document.getElementById('headCb');
+  if (headCb) {
+    const vis = getVisibleSequences();
+    const allSel = vis.length > 0 && vis.every(s => s.selected);
+    const noneSel = vis.every(s => !s.selected);
+    headCb.indeterminate = !allSel && !noneSel;
+  }
+
+  renderStats();
+}
+
+// ── Interactions ──
+function toggleSeqIdx(idx, checked) {
+  sequences[idx].selected = checked;
+  renderTable();
+}
+
+function toggleAllVisible(checked) {
+  const filter = document.getElementById('searchBox').value.toLowerCase();
+  for (const s of sequences) {
+    const matches = !filter || s.name.toLowerCase().includes(filter) || (s.renamed && s.renamed.toLowerCase().includes(filter));
+    if (matches) s.selected = checked;
+  }
+  renderTable();
+}
+
+function selectAll() {
+  sequences.forEach(s => s.selected = true);
+  renderTable();
+}
+
+function selectNone() {
+  sequences.forEach(s => s.selected = false);
+  renderTable();
+}
+
+function invertSelection() {
+  sequences.forEach(s => s.selected = !s.selected);
+  renderTable();
+}
+
+function selectByLength() {
+  const min = parseInt(document.getElementById('minLenInput').value) || 0;
+  sequences.forEach(s => s.selected = s.length >= min);
+  renderTable();
+}
+
+function doSort(col) {
+  if (sortCol === col) sortDir *= -1;
+  else { sortCol = col; sortDir = col === 'name' || col === 'desc' ? 1 : -1; }
+  renderTable();
+}
+
+document.getElementById('searchBox').addEventListener('input', renderTable);
+document.getElementById('minLenInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') selectByLength();
+});
+
+// ── Rename ──
+function startRename(cell, idx) {
+  if (cell.querySelector('.rename-input')) return;
+  const seq = sequences[idx];
+  const currentName = displayName(seq);
+  cell.innerHTML = `<input class="rename-input" type="text" value="${escapeHtml(currentName)}"
+    onblur="commitRename(${idx}, this)"
+    onkeydown="if(event.key==='Enter'){this.blur();}if(event.key==='Escape'){this.dataset.cancel='1';this.blur();}">`;
+  const input = cell.querySelector('.rename-input');
+  input.focus();
+  input.select();
+}
+
+function commitRename(idx, input) {
+  if (input.dataset.cancel === '1') { renderTable(); return; }
+  let trimmed = input.value.trim();
+  trimmed = trimmed.replace(/\s+/g, '_');
+  if (!trimmed || trimmed === sequences[idx].name) {
+    sequences[idx].renamed = null;
+  } else {
+    sequences[idx].renamed = trimmed;
+  }
+  renderTable();
+}
+
+function resetRename(idx) {
+  sequences[idx].renamed = null;
+  renderTable();
+}
+
+function resetAllRenames() {
+  sequences.forEach(s => s.renamed = null);
+  renderTable();
+}
+
+function toggleBulkRename() {
+  const panel = document.getElementById('bulkRenamePanel');
+  panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+
+function applyBulkRename() {
+  const prefix = document.getElementById('renamePrefix').value;
+  const suffix = document.getElementById('renameSuffix').value;
+  const find = document.getElementById('renameFind').value;
+  const replace = document.getElementById('renameReplace').value;
+  if (!prefix && !suffix && !find) return;
+
+  for (const seq of sequences) {
+    if (!seq.selected) continue;
+    let current = displayName(seq);
+    if (find) current = current.split(find).join(replace);
+    if (prefix) current = prefix + current;
+    if (suffix) current = current + suffix;
+    current = current.replace(/\s+/g, '_');
+    if (current === seq.name) seq.renamed = null;
+    else seq.renamed = current;
+  }
+  renderTable();
+}
+
+// ── Export ──
+function exportFiles() {
+  const selectedSeqs = sequences.filter(s => s.selected);
+  const selectedOrigNames = new Set(selectedSeqs.map(s => s.name));
+  if (selectedOrigNames.size === 0) { alert('No sequences selected.'); return; }
+
+  const hasRenames = selectedSeqs.some(s => s.renamed);
+  const suffix = hasRenames ? '.renamed.filtered' : '.filtered';
+
+  // Build rename map: original name → display name (for GFF seqid replacement)
+  const renameMap = {};
+  for (const seq of selectedSeqs) {
+    if (seq.renamed) renameMap[seq.name] = seq.renamed;
+  }
+
+  // Build FASTA — only from the query assembly, never the reference
+  const fastaOut = [];
+  for (const seq of sequences) {
+    if (!selectedOrigNames.has(seq.name)) continue;
+    const dName = displayName(seq);
+    const header = seq.desc ? `>${dName} ${seq.desc}` : `>${dName}`;
+    fastaOut.push(header);
+    for (let i = 0; i < seq.sequence.length; i += 80) {
+      fastaOut.push(seq.sequence.slice(i, i + 80));
+    }
+  }
+  downloadFile(fastaOut.join('\n') + '\n', stripExt(fastaFileName) + suffix + '.fasta', 'text/plain');
+
+  // Build GFF if loaded — rename seqid to match FASTA headers
+  if (gffLines.length) {
+    const gffOut = [...gffHeader];
+    for (const line of gffLines) {
+      const seqid = line.split('\t')[0];
+      if (selectedOrigNames.has(seqid)) {
+        if (renameMap[seqid]) {
+          gffOut.push(renameMap[seqid] + line.slice(line.indexOf('\t')));
+        } else {
+          gffOut.push(line);
+        }
+      }
+    }
+    downloadFile(gffOut.join('\n') + '\n', stripExt(gffFileName) + suffix + '.gff', 'text/plain');
+  }
+}
+
+function stripExt(name) {
+  return name.replace(/\.[^.]+$/, '');
+}
+
+function downloadFile(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+</script>
+
+</body>
+</html>
