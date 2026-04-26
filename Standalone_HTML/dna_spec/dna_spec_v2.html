@@ -1,0 +1,1387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Construct Designer v2</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f1ec;
+    --surface: #fff;
+    --border: #d4cec4;
+    --border-strong: #a8a198;
+    --text: #2c2825;
+    --text-muted: #7a7268;
+    --accent: #1a6b4a;
+    --accent-light: #e8f5ee;
+    --accent-hover: #145538;
+    --danger: #b5403a;
+    --danger-light: #fbeaea;
+    --slot-bg: #fafaf7;
+    --drag-over: #d4eee0;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+    --radius: 6px;
+    --mono: 'IBM Plex Mono', monospace;
+    --serif: 'Source Serif 4', serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    background: var(--text);
+    color: var(--bg);
+    padding: 20px 32px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+
+  header h1 {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+
+  header span {
+    font-size: 11px;
+    opacity: 0.5;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 0;
+    min-height: calc(100vh - 64px);
+  }
+
+  /* === LEFT PANEL === */
+  .panel-left {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .upload-zone {
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .upload-area {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .upload-area:hover, .upload-area.drag-hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+
+  .upload-area input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .upload-icon {
+    font-size: 24px;
+    margin-bottom: 8px;
+    opacity: 0.4;
+  }
+
+  .upload-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .upload-label strong {
+    color: var(--accent);
+    display: block;
+  }
+
+  .seq-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .seq-item {
+    padding: 10px 20px;
+    cursor: grab;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.15s;
+    user-select: none;
+    border-left: 3px solid transparent;
+  }
+
+  .seq-item:hover {
+    background: var(--accent-light);
+    border-left-color: var(--accent);
+  }
+
+  .seq-item:active { cursor: grabbing; }
+
+  .seq-item .grip {
+    color: var(--border-strong);
+    font-size: 11px;
+    flex-shrink: 0;
+    letter-spacing: 1px;
+  }
+
+  .seq-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .seq-name {
+    font-weight: 600;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .seq-len {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .seq-count {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+
+  /* === RIGHT PANEL === */
+  .panel-right {
+    padding: 24px 32px;
+    overflow-y: auto;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  .btn:hover { border-color: var(--border-strong); box-shadow: var(--shadow); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover { background: var(--accent-hover); }
+
+  .btn-danger {
+    color: var(--danger);
+    border-color: transparent;
+    background: none;
+    padding: 6px 8px;
+  }
+
+  .btn-danger:hover { background: var(--danger-light); }
+
+  .btn-sm { padding: 5px 10px; font-size: 11px; }
+
+  .spacer { flex: 1; }
+
+  /* === CONSTRUCT CARDS === */
+  .constructs { display: flex; flex-direction: column; gap: 20px; }
+
+  .construct-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .construct-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(to bottom, #fdfcfa, var(--surface));
+  }
+
+  .construct-num {
+    font-family: var(--serif);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent);
+    flex-shrink: 0;
+    width: 28px;
+  }
+
+  .construct-name-input {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    background: transparent;
+    outline: none;
+    flex: 1;
+    padding: 4px 0;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
+  }
+
+  .construct-name-input:focus {
+    border-bottom-color: var(--accent);
+  }
+
+  .construct-name-input::placeholder { color: var(--border-strong); }
+
+  .construct-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* === SLOTS === */
+  .slot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--slot-bg);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    min-height: 48px;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .slot.drag-over {
+    border-color: var(--accent);
+    border-style: solid;
+    background: var(--drag-over);
+  }
+
+  .slot.filled {
+    border-style: solid;
+    border-color: var(--border);
+    background: var(--surface);
+  }
+
+  .slot-num {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+    width: 18px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .slot-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .slot-placeholder {
+    color: var(--border-strong);
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  .slot-seq-name {
+    font-weight: 600;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .slot-seq-len {
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .rc-toggle {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+    letter-spacing: 0.3px;
+    color: var(--text-muted);
+  }
+
+  .rc-toggle.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .rc-toggle:hover:not(.active) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .slot-arrow {
+    color: var(--text-muted);
+    font-size: 10px;
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+
+  .slot-reorder {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex-shrink: 0;
+  }
+
+  .slot-reorder button {
+    font-family: var(--mono);
+    font-size: 9px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+    padding: 1px 4px;
+    color: var(--text-muted);
+    line-height: 1;
+  }
+
+  .slot-reorder button:hover {
+    background: var(--accent-light);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .construct-foot {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fdfcfa;
+  }
+
+  .construct-foot .total {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex: 1;
+  }
+
+  .construct-foot .total strong {
+    color: var(--text);
+  }
+
+  /* === VISUAL MAP === */
+  .construct-map {
+    padding: 8px 20px 4px;
+    border-top: 1px solid var(--border);
+    background: #fdfcfa;
+    overflow-x: auto;
+  }
+
+  .map-bar {
+    display: flex;
+    height: 22px;
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: fit-content;
+  }
+
+  .map-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    padding: 0 6px;
+    min-width: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .map-segment.rc::after {
+    content: '◄';
+    margin-left: 3px;
+    font-size: 7px;
+    opacity: 0.7;
+  }
+
+  /* color palette for segments */
+  .seg-0 { background: #3a7c5f; }
+  .seg-1 { background: #5b6abf; }
+  .seg-2 { background: #bf7b3a; }
+  .seg-3 { background: #8b4a8f; }
+  .seg-4 { background: #3a8f9f; }
+  .seg-5 { background: #bf4a5a; }
+  .seg-6 { background: #6f8f3a; }
+  .seg-7 { background: #9f6a4a; }
+
+  /* === EMPTY STATE === */
+  .empty-state {
+    text-align: center;
+    padding: 60px 40px;
+    color: var(--text-muted);
+  }
+
+  .empty-state .icon { font-size: 40px; opacity: 0.3; margin-bottom: 16px; }
+  .empty-state h3 {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--text);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .empty-state p { font-size: 12px; line-height: 1.6; max-width: 320px; margin: 0 auto; }
+
+  /* === NOTIFICATIONS === */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--text);
+    color: var(--bg);
+    padding: 12px 20px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    animation: slideUp 0.3s ease;
+    max-width: 360px;
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+  /* === IMPORT MODAL === */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(44,40,37,0.45);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.15s ease;
+  }
+
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .modal {
+    background: var(--surface);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+    width: 620px;
+    max-width: 92vw;
+    max-height: 88vh;
+    overflow-y: auto;
+    animation: modalIn 0.2s ease;
+  }
+
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .modal-head {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .modal-head h2 {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .modal-body { padding: 20px 24px; }
+
+  .modal-body p {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 12px;
+  }
+
+  .modal-body .format-example {
+    background: var(--slot-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    font-size: 11px;
+    line-height: 1.8;
+    margin-bottom: 16px;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text);
+  }
+
+  .format-example .comment { color: var(--text-muted); }
+  .format-example .rc-hint { color: var(--accent); font-weight: 600; }
+
+  .modal-body textarea {
+    width: 100%;
+    min-height: 140px;
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    resize: vertical;
+    outline: none;
+    background: var(--slot-bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+
+  .modal-body textarea:focus { border-color: var(--accent); }
+
+  .modal-body textarea::placeholder { color: var(--border-strong); }
+
+  .modal-body label.file-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--accent);
+    cursor: pointer;
+    margin-top: 10px;
+    font-weight: 500;
+  }
+
+  .modal-body label.file-label:hover { text-decoration: underline; }
+  .modal-body label.file-label input { display: none; }
+
+  .modal-foot {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    background: #fdfcfa;
+    border-radius: 0 0 8px 8px;
+  }
+
+  .import-errors {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: var(--danger-light);
+    border: 1px solid #e8c4c2;
+    border-radius: var(--radius);
+    font-size: 11px;
+    color: var(--danger);
+    line-height: 1.6;
+    display: none;
+  }
+
+  .or-divider {
+    text-align: center;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--border-strong);
+    margin: 14px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .or-divider::before, .or-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .upload-area.gff-area {
+    padding: 16px 12px;
+    margin-top: 12px;
+  }
+
+  .upload-area.gff-area .upload-icon { font-size: 18px; margin-bottom: 4px; }
+  .upload-area.gff-area .upload-label { font-size: 11px; }
+
+  .gff-status {
+    margin-top: 8px;
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 500;
+    text-align: center;
+  }
+
+  .annot-badge {
+    font-size: 9px;
+    background: var(--accent-light);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .slot-annot-count {
+    font-size: 9px;
+    color: var(--accent);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; }
+    .panel-left { max-height: 40vh; }
+    .panel-right { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Construct Designer</h1>
+  <span>Sequence Assembly Tool v2</span>
+</header>
+
+<div class="app">
+  <div class="panel-left">
+    <div class="panel-header">Sequence Library</div>
+    <div class="upload-zone">
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept=".fasta,.fa,.fna,.fas,.txt">
+        <div class="upload-icon">⬆</div>
+        <div class="upload-label">
+          <strong>Drop FASTA file here</strong>
+          or click to browse
+        </div>
+      </div>
+    </div>
+    <div class="upload-zone" id="gffUploadZone">
+      <div class="upload-area gff-area" id="gffUploadArea">
+        <input type="file" id="gffFileInput" accept=".gff,.gff3,.gtf,.txt">
+        <div class="upload-icon">⬆</div>
+        <div class="upload-label">
+          <strong>Drop GFF3 file here</strong>
+          annotations (optional)
+        </div>
+      </div>
+      <div class="gff-status" id="gffStatus"></div>
+    </div>
+    <div class="seq-list" id="seqList"></div>
+    <div class="seq-count" id="seqCount"></div>
+  </div>
+
+  <div class="panel-right">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="addConstruct()">+ New Construct</button>
+      <button class="btn" onclick="openImportModal()">Import from Spreadsheet</button>
+      <button class="btn" onclick="exportTemplate()">Download Template</button>
+      <div class="spacer"></div>
+      <button class="btn" onclick="exportFasta()" id="btnFasta" disabled>Export FASTA</button>
+      <button class="btn" onclick="exportCsv()" id="btnCsv" disabled>Export CSV</button>
+      <button class="btn" onclick="exportGff()" id="btnGff" disabled>Export GFF</button>
+    </div>
+    <div class="constructs" id="constructs">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🧬</div>
+        <h3>No constructs yet</h3>
+        <p>Upload a FASTA file, then click "New Construct" to start building. Drag sequences from the library into slots, or use "Import from Spreadsheet" to bulk-define constructs.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ───
+let sequences = {};       // name → sequence string
+let seqOrder = [];         // ordered names
+let constructs = [];       // [{ id, name, slots: [{ seqName, rc }] }]
+let constructCounter = 0;
+let draggedSeqName = null;
+let gffAnnotations = {};  // seqName → [{source, type, start, end, score, strand, phase, attributes}]
+
+// ─── FASTA Parsing ───
+function parseFasta(text) {
+  const seqs = {};
+  const order = [];
+  let current = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('>')) {
+      current = line.slice(1).trim().split(/\s+/)[0];
+      if (!seqs[current]) {
+        seqs[current] = '';
+        order.push(current);
+      }
+    } else if (current) {
+      seqs[current] += line.replace(/\s/g, '').toUpperCase();
+    }
+  }
+  return { seqs, order };
+}
+
+// ─── Reverse Complement ───
+const comp = { A:'T', T:'A', G:'C', C:'G', R:'Y', Y:'R', M:'K', K:'M', S:'S', W:'W', B:'V', V:'B', D:'H', H:'D', N:'N' };
+function reverseComplement(seq) {
+  return seq.split('').reverse().map(c => comp[c] || c).join('');
+}
+
+// ─── File Handling ───
+const fileInput = document.getElementById('fileInput');
+const uploadArea = document.getElementById('uploadArea');
+
+fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag-hover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-hover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag-hover');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { seqs, order } = parseFasta(e.target.result);
+    sequences = seqs;
+    seqOrder = order;
+    renderSeqList();
+    toast(`Loaded ${order.length} sequence${order.length !== 1 ? 's' : ''}`);
+  };
+  reader.readAsText(file);
+}
+
+// ─── GFF Parsing ───
+function parseGff3(text) {
+  const annotations = {};
+  let totalCount = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const cols = line.split('\t');
+    if (cols.length < 9) continue;
+    const seqid = cols[0];
+    const ann = {
+      source: cols[1],
+      type: cols[2],
+      start: parseInt(cols[3], 10),
+      end: parseInt(cols[4], 10),
+      score: cols[5],
+      strand: cols[6],
+      phase: cols[7],
+      attributes: cols[8]
+    };
+    if (isNaN(ann.start) || isNaN(ann.end)) continue;
+    if (!annotations[seqid]) annotations[seqid] = [];
+    annotations[seqid].push(ann);
+    totalCount++;
+  }
+  return { annotations, totalCount };
+}
+
+// ─── GFF File Handling ───
+const gffFileInput = document.getElementById('gffFileInput');
+const gffUploadArea = document.getElementById('gffUploadArea');
+
+gffFileInput.addEventListener('change', e => { if (e.target.files[0]) loadGffFile(e.target.files[0]); });
+gffUploadArea.addEventListener('dragover', e => { e.preventDefault(); gffUploadArea.classList.add('drag-hover'); });
+gffUploadArea.addEventListener('dragleave', () => gffUploadArea.classList.remove('drag-hover'));
+gffUploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  gffUploadArea.classList.remove('drag-hover');
+  if (e.dataTransfer.files[0]) loadGffFile(e.dataTransfer.files[0]);
+});
+
+function loadGffFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const { annotations, totalCount } = parseGff3(e.target.result);
+    gffAnnotations = annotations;
+    const seqIds = Object.keys(annotations);
+    const matched = seqIds.filter(id => sequences[id]);
+    document.getElementById('gffStatus').textContent =
+      `${totalCount} annotations on ${seqIds.length} seq${seqIds.length !== 1 ? 's' : ''}` +
+      (seqOrder.length > 0 ? ` (${matched.length} matched)` : '');
+    renderSeqList();
+    updateExportButtons();
+    toast(`Loaded ${totalCount} GFF annotation${totalCount !== 1 ? 's' : ''}`);
+  };
+  reader.readAsText(file);
+}
+
+// ─── Render Sequence List ───
+function renderSeqList() {
+  const list = document.getElementById('seqList');
+  const count = document.getElementById('seqCount');
+  list.innerHTML = seqOrder.map(name => {
+    const annotCount = (gffAnnotations[name] || []).length;
+    const badge = annotCount > 0 ? `<span class="annot-badge">${annotCount} ann</span>` : '';
+    return `
+    <div class="seq-item" draggable="true"
+         ondragstart="onSeqDragStart(event, '${esc(name)}')"
+         ondragend="onSeqDragEnd(event)">
+      <span class="grip">⠿</span>
+      <div class="seq-info">
+        <div class="seq-name" title="${esc(name)}">${esc(name)}</div>
+        <div class="seq-len">${sequences[name].length.toLocaleString()} bp</div>
+      </div>
+      ${badge}
+    </div>`;
+  }).join('');
+  count.textContent = seqOrder.length ? `${seqOrder.length} sequence${seqOrder.length !== 1 ? 's' : ''}` : '';
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ─── Drag & Drop ───
+function onSeqDragStart(e, name) {
+  draggedSeqName = name;
+  e.dataTransfer.effectAllowed = 'copy';
+  e.target.style.opacity = '0.5';
+}
+
+function onSeqDragEnd(e) {
+  e.target.style.opacity = '1';
+  draggedSeqName = null;
+}
+
+function onSlotDragOver(e) {
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+
+function onSlotDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function onSlotDrop(e, constructId, slotIdx) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (!draggedSeqName) return;
+  const c = constructs.find(x => x.id === constructId);
+  if (!c) return;
+  c.slots[slotIdx] = { seqName: draggedSeqName, rc: false };
+  renderConstructs();
+}
+
+// ─── Constructs ───
+function addConstruct() {
+  constructCounter++;
+  constructs.push({
+    id: constructCounter,
+    name: '',
+    slots: [{ seqName: null, rc: false }]
+  });
+  document.getElementById('emptyState')?.remove();
+  renderConstructs();
+}
+
+function removeConstruct(id) {
+  constructs = constructs.filter(c => c.id !== id);
+  renderConstructs();
+  if (constructs.length === 0) {
+    document.getElementById('constructs').innerHTML = `
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🧬</div>
+        <h3>No constructs yet</h3>
+        <p>Upload a FASTA file, then click "New Construct" to start building. Drag sequences from the library into slots, or use "Import from Spreadsheet" to bulk-define constructs.</p>
+      </div>`;
+  }
+}
+
+function addSlot(constructId) {
+  const c = constructs.find(x => x.id === constructId);
+  if (c) { c.slots.push({ seqName: null, rc: false }); renderConstructs(); }
+}
+
+function removeSlot(constructId, idx) {
+  const c = constructs.find(x => x.id === constructId);
+  if (c && c.slots.length > 1) { c.slots.splice(idx, 1); renderConstructs(); }
+}
+
+function clearSlot(constructId, idx) {
+  const c = constructs.find(x => x.id === constructId);
+  if (c) { c.slots[idx] = { seqName: null, rc: false }; renderConstructs(); }
+}
+
+function toggleRc(constructId, idx) {
+  const c = constructs.find(x => x.id === constructId);
+  if (c && c.slots[idx].seqName) { c.slots[idx].rc = !c.slots[idx].rc; renderConstructs(); }
+}
+
+function moveSlot(constructId, idx, dir) {
+  const c = constructs.find(x => x.id === constructId);
+  if (!c) return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= c.slots.length) return;
+  [c.slots[idx], c.slots[newIdx]] = [c.slots[newIdx], c.slots[idx]];
+  renderConstructs();
+}
+
+function onNameChange(constructId, val) {
+  const c = constructs.find(x => x.id === constructId);
+  if (c) c.name = val;
+  updateExportButtons();
+}
+
+function updateExportButtons() {
+  const anyValid = constructs.some(c => c.name && c.slots.some(s => s.seqName));
+  document.getElementById('btnFasta').disabled = !anyValid;
+  document.getElementById('btnCsv').disabled = !anyValid;
+  const hasAnnotations = Object.keys(gffAnnotations).length > 0;
+  document.getElementById('btnGff').disabled = !(anyValid && hasAnnotations);
+}
+
+// ─── Segment Colors ───
+function seqColor(name) {
+  const idx = seqOrder.indexOf(name);
+  return `seg-${idx % 8}`;
+}
+
+// ─── Render ───
+function renderConstructs() {
+  const container = document.getElementById('constructs');
+  const existing = document.getElementById('emptyState');
+  if (constructs.length === 0 && !existing) {
+    container.innerHTML = `
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🧬</div>
+        <h3>No constructs yet</h3>
+        <p>Upload a FASTA file, then click "New Construct" to start building. Drag sequences from the library into slots, or use "Import from Spreadsheet" to bulk-define constructs.</p>
+      </div>`;
+    updateExportButtons();
+    return;
+  }
+  if (existing && constructs.length > 0) existing.remove();
+
+  // Build HTML for each construct
+  container.innerHTML = constructs.map((c, ci) => {
+    const filledSlots = c.slots.filter(s => s.seqName);
+    const totalBp = filledSlots.reduce((sum, s) => sum + (sequences[s.seqName]?.length || 0), 0);
+
+    const slotsHtml = c.slots.map((slot, si) => {
+      if (slot.seqName) {
+        const len = sequences[slot.seqName]?.length || 0;
+        const slotAnnotCount = (gffAnnotations[slot.seqName] || []).length;
+        const slotAnnotHtml = slotAnnotCount > 0 ? `<span class="slot-annot-count">${slotAnnotCount} ann</span>` : '';
+        return `
+        <div class="slot filled"
+             ondragover="onSlotDragOver(event)"
+             ondragleave="onSlotDragLeave(event)"
+             ondrop="onSlotDrop(event, ${c.id}, ${si})">
+          <span class="slot-num">${si + 1}</span>
+          <div class="slot-content">
+            <span class="slot-seq-name">${esc(slot.seqName)}</span>
+            <span class="slot-seq-len">${len.toLocaleString()} bp</span>
+            ${slotAnnotHtml}
+            ${slot.rc ? '<span class="slot-arrow">◄ RC</span>' : '<span class="slot-arrow">►</span>'}
+          </div>
+          <button class="rc-toggle ${slot.rc ? 'active' : ''}" onclick="toggleRc(${c.id}, ${si})" title="Reverse complement">RC</button>
+          <div class="slot-reorder">
+            <button onclick="moveSlot(${c.id}, ${si}, -1)" title="Move up">▲</button>
+            <button onclick="moveSlot(${c.id}, ${si}, 1)" title="Move down">▼</button>
+          </div>
+          <button class="btn-danger btn-sm" onclick="clearSlot(${c.id}, ${si})" title="Clear slot">✕</button>
+        </div>`;
+      } else {
+        return `
+        <div class="slot"
+             ondragover="onSlotDragOver(event)"
+             ondragleave="onSlotDragLeave(event)"
+             ondrop="onSlotDrop(event, ${c.id}, ${si})">
+          <span class="slot-num">${si + 1}</span>
+          <div class="slot-content">
+            <span class="slot-placeholder">Drag a sequence here</span>
+          </div>
+          ${c.slots.length > 1 ? `<button class="btn-danger btn-sm" onclick="removeSlot(${c.id}, ${si})" title="Remove slot">✕</button>` : ''}
+        </div>`;
+      }
+    }).join('');
+
+    // visual map
+    let mapHtml = '';
+    if (filledSlots.length > 0 && totalBp > 0) {
+      const segs = filledSlots.map(s => {
+        const len = sequences[s.seqName]?.length || 0;
+        const pct = Math.max(8, (len / totalBp) * 100);
+        const col = seqColor(s.seqName);
+        const label = s.seqName.length > 12 ? s.seqName.slice(0, 11) + '…' : s.seqName;
+        return `<div class="map-segment ${col} ${s.rc ? 'rc' : ''}" style="flex:${len}" title="${esc(s.seqName)} (${len.toLocaleString()} bp)${s.rc ? ' — reverse complement' : ''}">${label}</div>`;
+      }).join('');
+      mapHtml = `<div class="construct-map"><div class="map-bar">${segs}</div></div>`;
+    }
+
+    return `
+    <div class="construct-card">
+      <div class="construct-head">
+        <span class="construct-num">${ci + 1}</span>
+        <input class="construct-name-input" type="text" value="${esc(c.name)}"
+               placeholder="Name this construct…"
+               oninput="onNameChange(${c.id}, this.value)">
+        <button class="btn-danger" onclick="removeConstruct(${c.id})" title="Delete construct">✕ Delete</button>
+      </div>
+      <div class="construct-body">
+        ${slotsHtml}
+      </div>
+      <div class="construct-foot">
+        <button class="btn btn-sm" onclick="addSlot(${c.id})">+ Add Slot</button>
+        <div class="total">${filledSlots.length > 0 ? `<strong>${totalBp.toLocaleString()}</strong> bp total · ${filledSlots.length} part${filledSlots.length !== 1 ? 's' : ''}` : 'Empty construct'}</div>
+      </div>
+      ${mapHtml}
+    </div>`;
+  }).join('');
+
+  updateExportButtons();
+}
+
+// ─── Build Concatenated Sequences ───
+function buildProducts() {
+  const products = [];
+  for (const c of constructs) {
+    const filled = c.slots.filter(s => s.seqName);
+    if (!c.name || filled.length === 0) continue;
+    let seq = '';
+    const parts = [];
+    for (const s of filled) {
+      const raw = sequences[s.seqName] || '';
+      const part = s.rc ? reverseComplement(raw) : raw;
+      seq += part;
+      parts.push({ name: s.seqName, rc: s.rc, length: raw.length });
+    }
+    products.push({ name: c.name, seq, parts });
+  }
+  return products;
+}
+
+// ─── Export FASTA ───
+function exportFasta() {
+  const products = buildProducts();
+  if (products.length === 0) { toast('No valid constructs to export'); return; }
+  let text = '';
+  for (const p of products) {
+    text += `>${p.name}\n`;
+    // wrap at 80 chars
+    for (let i = 0; i < p.seq.length; i += 80) {
+      text += p.seq.slice(i, i + 80) + '\n';
+    }
+  }
+  download(text, 'constructs.fasta', 'text/plain');
+  toast(`Exported ${products.length} construct${products.length !== 1 ? 's' : ''} as FASTA`);
+}
+
+// ─── Export CSV ───
+function exportCsv() {
+  const products = buildProducts();
+  if (products.length === 0) { toast('No valid constructs to export'); return; }
+  let csv = 'Construct Name,Total Length (bp),Parts,Sequence\n';
+  for (const p of products) {
+    const partsStr = p.parts.map(pt => pt.name + (pt.rc ? ' (RC)' : '')).join(' + ');
+    csv += `"${p.name}",${p.seq.length},"${partsStr}","${p.seq}"\n`;
+  }
+  download(csv, 'constructs.csv', 'text/csv');
+  toast(`Exported ${products.length} construct${products.length !== 1 ? 's' : ''} as CSV`);
+}
+
+// ─── Build Annotations for Products ───
+function buildProductAnnotations() {
+  const results = [];
+  for (const c of constructs) {
+    const filled = c.slots.filter(s => s.seqName);
+    if (!c.name || filled.length === 0) continue;
+    let offset = 0;
+    const annotations = [];
+    for (const s of filled) {
+      const fragLen = (sequences[s.seqName] || '').length;
+      const fragAnns = gffAnnotations[s.seqName] || [];
+      for (const ann of fragAnns) {
+        let newStart, newEnd, newStrand;
+        if (s.rc) {
+          newStart = offset + fragLen - ann.end + 1;
+          newEnd = offset + fragLen - ann.start + 1;
+          newStrand = ann.strand === '+' ? '-' : ann.strand === '-' ? '+' : ann.strand;
+        } else {
+          newStart = offset + ann.start;
+          newEnd = offset + ann.end;
+          newStrand = ann.strand;
+        }
+        annotations.push({
+          seqid: c.name,
+          source: ann.source,
+          type: ann.type,
+          start: newStart,
+          end: newEnd,
+          score: ann.score,
+          strand: newStrand,
+          phase: ann.phase,
+          attributes: ann.attributes
+        });
+      }
+      offset += fragLen;
+    }
+    if (annotations.length > 0) {
+      results.push({ name: c.name, totalLen: offset, annotations });
+    }
+  }
+  return results;
+}
+
+// ─── Export GFF ───
+function exportGff() {
+  const productAnns = buildProductAnnotations();
+  if (productAnns.length === 0) { toast('No annotations to export'); return; }
+  let text = '##gff-version 3\n';
+  let totalAnns = 0;
+  for (const p of productAnns) {
+    text += `##sequence-region ${p.name} 1 ${p.totalLen}\n`;
+    for (const a of p.annotations) {
+      text += [a.seqid, a.source, a.type, a.start, a.end, a.score, a.strand, a.phase, a.attributes].join('\t') + '\n';
+      totalAnns++;
+    }
+  }
+  download(text, 'constructs.gff3', 'text/plain');
+  toast(`Exported ${totalAnns} annotation${totalAnns !== 1 ? 's' : ''} across ${productAnns.length} construct${productAnns.length !== 1 ? 's' : ''}`);
+}
+
+// ─── Download Helper ───
+function download(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ─── Toast ───
+function toast(msg) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ─── Import Modal ───
+function openImportModal() {
+  if (seqOrder.length === 0) {
+    toast('Load a FASTA file first so sequence names can be matched');
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop';
+  modal.id = 'importModal';
+  modal.onclick = e => { if (e.target === modal) closeImportModal(); };
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-head">
+        <h2>Import Constructs</h2>
+        <button class="btn-danger" onclick="closeImportModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>Paste tab- or comma-separated rows from a spreadsheet. Each row defines one construct. The first column is the construct name; remaining columns are part names from your FASTA library.</p>
+        <p>Prefix a part name with <strong>-</strong> (minus) for reverse complement. A bare name or <strong>+</strong> prefix means forward strand.</p>
+        <div class="format-example"><span class="comment"># Example (tabs or commas between columns):</span>
+<span class="comment"># Name         Part1       Part2      Part3</span>
+GFP_construct  promoter    gfp        terminator
+RFP_rev        promoter    <span class="rc-hint">-rfp</span>       terminator
+Dual           promoter    gfp        <span class="rc-hint">-rfp</span>       terminator</div>
+        <textarea id="importText" placeholder="Paste rows here — tab or comma separated&#10;&#10;MyConstruct1&#9;promoter&#9;gfp&#9;terminator&#10;MyConstruct2&#9;promoter&#9;-rfp&#9;terminator"></textarea>
+        <div class="or-divider">or</div>
+        <label class="file-label">
+          ⬆ Upload a .csv or .tsv file
+          <input type="file" id="importFileInput" accept=".csv,.tsv,.txt" onchange="loadImportFile(event)">
+        </label>
+        <div class="import-errors" id="importErrors"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeImportModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="doImport()">Import</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('importText')?.focus(), 100);
+}
+
+function closeImportModal() {
+  document.getElementById('importModal')?.remove();
+}
+
+function loadImportFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    document.getElementById('importText').value = ev.target.result;
+  };
+  reader.readAsText(file);
+}
+
+function doImport() {
+  const text = document.getElementById('importText')?.value?.trim();
+  if (!text) { showImportError('Nothing to import — paste or upload data first.'); return; }
+
+  const errors = [];
+  const newConstructs = [];
+  const lines = text.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // detect delimiter: if tabs present use tabs, else commas
+    const delim = line.includes('\t') ? '\t' : ',';
+    const cols = line.split(delim).map(c => c.trim().replace(/^["']|["']$/g, ''));
+
+    if (cols.length < 2) {
+      errors.push(`Row ${i + 1}: need at least a name and one part`);
+      continue;
+    }
+
+    const name = cols[0];
+    if (!name) { errors.push(`Row ${i + 1}: empty construct name`); continue; }
+
+    const slots = [];
+    for (let j = 1; j < cols.length; j++) {
+      let part = cols[j].trim();
+      if (!part) continue;  // skip empty trailing columns
+
+      let rc = false;
+      if (part.startsWith('-')) {
+        rc = true;
+        part = part.slice(1).trim();
+      } else if (part.startsWith('+')) {
+        part = part.slice(1).trim();
+      }
+
+      if (!part) { errors.push(`Row ${i + 1}, col ${j + 1}: empty part name after +/- prefix`); continue; }
+
+      if (!sequences[part]) {
+        errors.push(`Row ${i + 1}: "${part}" not found in FASTA library`);
+        continue;
+      }
+
+      slots.push({ seqName: part, rc });
+    }
+
+    if (slots.length > 0) {
+      constructCounter++;
+      newConstructs.push({ id: constructCounter, name, slots });
+    }
+  }
+
+  if (newConstructs.length === 0) {
+    showImportError('No valid constructs found.\n' + errors.join('\n'));
+    return;
+  }
+
+  constructs.push(...newConstructs);
+  document.getElementById('emptyState')?.remove();
+  renderConstructs();
+  closeImportModal();
+
+  let msg = `Imported ${newConstructs.length} construct${newConstructs.length !== 1 ? 's' : ''}`;
+  if (errors.length) msg += ` (${errors.length} warning${errors.length !== 1 ? 's' : ''} skipped)`;
+  toast(msg);
+}
+
+function showImportError(msg) {
+  const el = document.getElementById('importErrors');
+  if (el) { el.style.display = 'block'; el.textContent = msg; }
+}
+
+// ─── Template Export ───
+function exportTemplate() {
+  const header = 'Construct Name\tPart 1\tPart 2\tPart 3\tPart 4';
+  const example1 = '# Prefix with - for reverse complement, + or bare for forward';
+  const example2 = '# Example:';
+  let rows = [header, example1, example2];
+  if (seqOrder.length >= 2) {
+    rows.push(`Example_Fwd\t${seqOrder[0]}\t${seqOrder[1]}`);
+    rows.push(`Example_RC\t${seqOrder[0]}\t-${seqOrder[1]}`);
+  } else {
+    rows.push('MyConstruct\tpart1\tpart2\t-part3');
+  }
+  download(rows.join('\n') + '\n', 'construct_template.tsv', 'text/tab-separated-values');
+  toast('Template downloaded — open in any spreadsheet app');
+}
+</script>
+
+</body>
+</html>
