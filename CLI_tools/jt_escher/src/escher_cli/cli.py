@@ -70,6 +70,7 @@ def main(argv=None):
         reaction_data=reaction_data,
         metabolite_data=metabolite_data,
         enable_keys=True,
+        enable_search=True,
     )
     builder.save_html(args.output)
     inline_escher_js(args.output)
