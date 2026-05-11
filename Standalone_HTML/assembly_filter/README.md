@@ -2,7 +2,7 @@
 
 A standalone HTML tool for trimming junk contigs/scaffolds from genome assemblies. Upload a FASTA (and optionally a GFF), review sequences sorted by length, uncheck the ones you don't want, and export cleaned files — no server or installation required.
 
-Typical use case: you have a yeast assembly with 16 chromosomes + mitochondrial DNA, plus dozens of short assembly artifacts. This tool lets you visually identify and remove the junk.
+Typical use case: you have a yeast assembly with 16 chromosomes + mitochondrial DNA, plus several short assembly artifacts. This tool lets you visually identify and remove the junk.
 
 ## Variants
 
