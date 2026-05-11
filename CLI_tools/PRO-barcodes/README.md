@@ -2,8 +2,6 @@
 
 A containerized wrapper around [PRO](https://github.com/rztongr/PRO) (Phylogenetically Robust Oligos), a DNA barcode designer optimized for nanopore sequencing. This is not a custom tool — just a Dockerfile packaging the existing PRO software for portable, Nextflow-compatible use.
 
-Used here for generating nanopore-compatible sequence barcodes.
-
 ## Prerequisites
 
 - Docker
