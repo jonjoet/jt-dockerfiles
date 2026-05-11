@@ -15,7 +15,7 @@ Dockerfiles for command-line utilities. Meant to be run with `docker run`. Most 
 | [PlasAnn_CLI](CLI_tools/PlasAnn_CLI/) | Plasmid annotation (oriV, rep genes, CDS, etc.) |
 | [PRO-barcodes](CLI_tools/PRO-barcodes/) | Nanopore-compatible DNA barcode design (PRO algorithm) |
 | [TDFPS](CLI_tools/TDFPS/) | GPU-accelerated nanopore barcode design (TDFPSDesigner) |
-| [Vulcan](CLI_tools/Vulcan/) | Long-read alignment and structural variant calling |
+| [Vulcan](CLI_tools/Vulcan/) | Two-pass long-read mapping (minimap2 + NGMLR) |
 | [xlsx2csv](CLI_tools/xlsx2csv/) | Excel to CSV conversion |
 
 ## Webservers
