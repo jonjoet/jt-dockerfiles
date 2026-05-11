@@ -2,8 +2,6 @@
 
 A containerized wrapper around [TDFPSDesigner](https://github.com/junhaiqi/TDFPSDesigner), a GPU-accelerated barcode design and selection tool for nanopore sequencing. This is not a custom tool — just a Dockerfile packaging the existing TDFPSDesigner software for portable, Nextflow-compatible use.
 
-Used here for generating nanopore-compatible sequence barcodes (same goal as PRO-barcodes, different algorithm).
-
 ## Prerequisites
 
 - Docker
