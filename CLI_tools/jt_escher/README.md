@@ -2,7 +2,7 @@
 
 CLI tool for generating standalone Escher metabolic pathway HTML files. Pins **escher 1.7.3** (later versions broke drag-to-merge metabolites).
 
-Output HTMLs are **fully self-contained**: the escher JS bundle is inlined, so the files render offline and don't break if the escher CDN ever drops this version. Expect ~1 MB per file.
+By default, output HTMLs are **fully self-contained**: the escher JS bundle is inlined, so the files render offline and don't break if the escher CDN ever drops this version. Expect ~1 MB per file. Use `--cdn` to keep the CDN link instead (smaller files, but requires internet).
 
 Escher 1.7.3 itself is vendored as an sdist under `vendor/` and installed from there, so the build doesn't depend on PyPI continuing to serve it.
 
@@ -53,6 +53,10 @@ Model source (mutually exclusive):
 Data overlays:
   --reaction-data PATH    Reaction data file (CSV/TSV or JSON)
   --metabolite-data PATH  Metabolite data file (CSV/TSV or JSON)
+
+Output mode:
+  --cdn                   Keep CDN script tag instead of inlining JS
+                          (smaller file, but requires internet to view)
 ```
 
 ## Data Formats
