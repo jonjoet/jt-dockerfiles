@@ -1,8 +1,6 @@
 # Vulcan
 
-A containerized wrapper around [Vulcan](https://github.com/Cas-Cromwel/Vulcan), a structural variant caller that uses long-read alignments. This is not a custom tool — just a Dockerfile packaging the existing Vulcan software (and its dependencies: minimap2, ngmlr, samtools) via micromamba for portable use.
-
-Used here for read alignment and structural variant detection.
+A containerized wrapper around [Vulcan](https://gitlab.com/treangenlab/vulcan/-/tree/master), a structural variant caller that uses long-read alignments. This is not a custom tool — just a Dockerfile packaging the existing Vulcan software (and its dependencies: minimap2, ngmlr, samtools) via micromamba for portable use.
 
 ## Prerequisites
 
