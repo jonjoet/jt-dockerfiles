@@ -50,6 +50,11 @@ def parse_args(argv=None):
 
     parser.add_argument("--reaction-data", help="Reaction data file (CSV/TSV or JSON)")
     parser.add_argument("--metabolite-data", help="Metabolite data file (CSV/TSV or JSON)")
+    parser.add_argument(
+        "--cdn",
+        action="store_true",
+        help="Keep CDN script tag instead of inlining JS (requires internet to view)",
+    )
 
     return parser.parse_args(argv)
 
@@ -73,7 +78,8 @@ def main(argv=None):
         enable_search=True,
     )
     builder.save_html(args.output)
-    inline_escher_js(args.output)
+    if not args.cdn:
+        inline_escher_js(args.output)
     print(f"Saved: {args.output}", file=sys.stderr)
 
 
