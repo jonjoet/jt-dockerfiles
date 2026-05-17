@@ -1,6 +1,8 @@
-# CHOPCHOP Cpf1 Web Interface
+# ccccui — CHOPCHOP Cpf1 Web Interface
 
-A Streamlit-based web frontend for designing Cpf1 (Cas12a) guide RNAs using CHOPCHOP. Runs as a single Docker container built on top of the existing `chopchop:ATCC13032` image.
+A Streamlit-based web frontend for designing Cpf1 (Cas12a) guide RNAs using [CHOPCHOP](https://chopchop.cbu.uib.no/). Users upload a target FASTA, adjust PAM/guide parameters, and download scored guide candidates as a TSV. Optionally annotates guides back onto a GenBank file.
+
+Runs as a single Docker container built on top of a local `chopchop:ATCC13032` image (CHOPCHOP configured with a *C. glutamicum* ATCC 13032 genome index).
 
 ## Setup on the VM
 

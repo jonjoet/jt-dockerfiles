@@ -24,7 +24,7 @@ Dockerfiles for tools that run as live web pages. Meant to be run on a VM and se
 
 | Tool | Description |
 |------|-------------|
-| [ccccui](Webservers/ccccui/) | Custom web UI |
+| [ccccui](Webservers/ccccui/) | Web UI for Cpf1 (Cas12a) guide RNA design via CHOPCHOP |
 | [D-genies](Webservers/D-genies/) | Interactive dot-plot visualization of genome alignments |
 | [p3p_retry](Webservers/p3p_retry/) | Primer3Plus web interface |
 | [Ribbon](Webservers/Ribbon/) | Structural variant visualization from split/supplementary alignments |
