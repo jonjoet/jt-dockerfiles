@@ -1,0 +1,6 @@
+##gff-version 3
+##sequence-region chr1 1 120
+chr1	prokka	gene	1	30	.	+	.	ID=gene0001
+chr1	prokka	CDS	1	30	.	+	0	ID=cds0001;Parent=gene0001
+pA	prokka	gene	5	40	.	+	.	ID=geneA01
+ghost_seq	prokka	gene	1	10	.	+	.	ID=orphan01

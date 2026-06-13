@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FASTA / GFF Combiner</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface2: #f0f2f5;
+    --border: #d0d7de;
+    --border-active: #a8b1ba;
+    --text: #1f2328;
+    --text-dim: #57606a;
+    --text-muted: #8b949e;
+    --accent: #0969da;
+    --accent-dim: #ddf4ff;
+    --green: #1a7f37;
+    --green-dim: #dafbe1;
+    --red: #cf222e;
+    --red-dim: #ffebe9;
+    --yellow: #9a6700;
+    --yellow-dim: #fff8c5;
+    --orange: #bc4c00;
+    --purple: #8250df;
+    --purple-dim: #e8dff5;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+
+  .app-header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+  }
+
+  .app-header h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .app-header h1 span { color: var(--accent); }
+  .app-header h1 small { color: var(--purple); font-size: 12px; font-weight: 400; }
+
+  .app-header .subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: auto;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .main-content { padding: 24px; max-width: 1800px; margin: 0 auto; }
+
+  /* Upload zone */
+  .upload-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .upload-box {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 28px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--surface);
+    position: relative;
+  }
+
+  .upload-box:hover { border-color: var(--border-active); background: var(--surface2); }
+  .upload-box.loaded { border-color: var(--green); border-style: solid; }
+  .upload-box.dragover { border-color: var(--accent); background: var(--accent-dim); }
+
+  .upload-box input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+
+  .upload-box .file-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.5; }
+  .upload-box.loaded .file-icon { opacity: 1; }
+
+  .upload-box .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  .upload-box .hint { font-size: 11px; color: var(--text-muted); }
+
+  /* Loaded file chips */
+  .file-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+    min-height: 0;
+  }
+
+  .file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .file-chip.fasta { border-color: var(--green); }
+  .file-chip.gff { border-color: var(--accent); }
+  .file-chip .chip-count { color: var(--text-muted); }
+  .file-chip .chip-x {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+  }
+  .file-chip .chip-x:hover { color: var(--red); }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 20px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .stat { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text-dim); }
+  .stat strong { color: var(--text); font-weight: 600; font-size: 14px; }
+  .stat.green strong { color: var(--green); }
+  .stat.purple strong { color: var(--purple); }
+  .stat.warn strong { color: var(--yellow); }
+  .stats-divider { width: 1px; height: 24px; background: var(--border); }
+
+  /* Controls bar */
+  .controls-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .search-box {
+    flex: 1;
+    min-width: 200px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  .search-box:focus { border-color: var(--accent); }
+  .search-box::placeholder { color: var(--text-muted); }
+
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+  .toggle input { accent-color: var(--purple); cursor: pointer; }
+
+  button {
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.1s;
+    white-space: nowrap;
+  }
+
+  button:hover { background: var(--surface2); border-color: var(--border-active); }
+
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  button.primary:hover { background: #c8e6fd; }
+  button.purple { background: var(--purple-dim); border-color: var(--purple); color: var(--purple); }
+  button.purple:hover { background: #ddd0f0; }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.success { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+  button.success:hover { background: #c5f3d0; }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.mini { padding: 3px 7px; font-size: 11px; }
+
+  /* Matrix table */
+  .table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .table-scroll { overflow-x: auto; max-height: 62vh; overflow-y: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+  thead { position: sticky; top: 0; z-index: 3; }
+
+  thead th {
+    background: var(--surface2);
+    padding: 8px 12px;
+    text-align: left;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+
+  thead th.sortable { cursor: pointer; }
+  thead th.sortable:hover { color: var(--text); }
+  thead th.sorted { color: var(--accent); }
+  thead th .sort-arrow { font-size: 10px; margin-left: 4px; }
+
+  /* Output columns */
+  thead th.out-col {
+    background: var(--purple-dim);
+    color: var(--purple);
+    text-transform: none;
+    letter-spacing: 0;
+    border-left: 2px solid var(--purple);
+    min-width: 140px;
+    vertical-align: top;
+  }
+  thead th.out-col:first-of-type { }
+  .out-head { display: flex; flex-direction: column; gap: 4px; }
+  .out-head-top { display: flex; align-items: center; gap: 4px; }
+  .out-name-input {
+    flex: 1;
+    min-width: 0;
+    padding: 3px 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--purple);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--purple);
+    outline: none;
+  }
+  .out-remove { cursor: pointer; color: var(--purple); font-size: 13px; line-height: 1; padding: 2px; }
+  .out-remove:hover { color: var(--red); }
+  .out-meta {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .out-selectall { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; color: var(--purple); }
+  .out-selectall input { accent-color: var(--purple); cursor: pointer; }
+  .out-collision { color: var(--red); font-weight: 600; }
+
+  td.out-cell {
+    text-align: center;
+    border-left: 2px solid var(--purple-dim);
+  }
+  td.out-cell input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--purple); cursor: pointer; }
+  td.out-cell.collide { background: var(--red-dim); }
+
+  tbody tr { border-bottom: 1px solid var(--border); transition: background 0.08s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody tr.unused { opacity: 0.5; }
+
+  tbody td {
+    padding: 8px 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+
+  td.seq-name {
+    font-weight: 500;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: text;
+    position: relative;
+  }
+  td.seq-name:hover .edit-hint { opacity: 1; }
+  .edit-hint { opacity: 0; transition: opacity 0.15s; margin-left: 4px; font-size: 10px; color: var(--text-muted); }
+  td.seq-name.renamed { border-left: 3px solid var(--yellow); }
+  .original-name { font-size: 10px; color: var(--text-muted); display: block; font-weight: 400; }
+  .reset-rename { cursor: pointer; color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+  .reset-rename:hover { color: var(--red); }
+  .auto-name { font-size: 10px; color: var(--purple); display: block; font-weight: 400; }
+  .rename-input {
+    width: 100%;
+    padding: 2px 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    outline: none;
+    background: var(--surface);
+    color: var(--text);
+    box-sizing: border-box;
+  }
+
+  td.source { color: var(--text-muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Length bar */
+  .len-cell { display: flex; align-items: center; gap: 8px; }
+  .len-bar-track { width: 70px; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .len-bar { height: 100%; background: var(--accent); border-radius: 3px; }
+
+  /* GC bar */
+  .gc-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .gc-bar-track { width: 44px; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .gc-bar { height: 100%; border-radius: 3px; }
+
+  /* Outputs summary */
+  .outputs-summary { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .out-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--purple);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .out-card h3 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--purple);
+    margin-bottom: 6px;
+    word-break: break-all;
+  }
+  .out-card .out-stats { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  .out-card .out-warn {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--yellow);
+    background: var(--yellow-dim);
+    border-radius: 4px;
+    padding: 4px 6px;
+    margin-bottom: 8px;
+  }
+  .out-card .out-warn.err { color: var(--red); background: var(--red-dim); }
+  .out-card .out-dl { display: flex; gap: 6px; }
+
+  /* Export section */
+  .export-section {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .export-section .export-info { flex: 1; font-size: 12px; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }
+
+  /* Empty state */
+  .empty-state { text-align: center; padding: 64px 24px; color: var(--text-muted); }
+  .empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+  .empty-state p { font-size: 14px; }
+
+  .warn-banner {
+    background: var(--yellow-dim);
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 8px 14px;
+    margin-bottom: 16px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--yellow);
+  }
+
+  @media (max-width: 900px) {
+    .upload-area { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <h1><span>&gt;</span> fasta-gff-combiner <small>build composite genomes</small></h1>
+  <span class="subtitle">client-side · no data leaves your browser</span>
+</header>
+
+<div class="main-content">
+  <div class="upload-area">
+    <label class="upload-box" id="fastaBox">
+      <input type="file" id="fastaInput" accept=".fasta,.fa,.fna,.fsa,.fas,.txt" multiple>
+      <div class="file-icon">🧬</div>
+      <div class="label">FASTA files</div>
+      <div class="hint">.fasta, .fa, .fna — drop multiple, they accumulate</div>
+    </label>
+    <label class="upload-box" id="gffBox">
+      <input type="file" id="gffInput" accept=".gff,.gff3,.gtf,.txt" multiple>
+      <div class="file-icon">📋</div>
+      <div class="label">GFF files</div>
+      <div class="hint">.gff, .gff3 (optional) — matched to sequences by seqid</div>
+    </label>
+  </div>
+
+  <div class="file-chips" id="fileChips"></div>
+
+  <div id="workspace" style="display:none;">
+    <div id="warnBanner" class="warn-banner" style="display:none;"></div>
+
+    <div class="stats-bar" id="statsBar"></div>
+
+    <div class="controls-bar">
+      <input type="text" class="search-box" id="searchBox" placeholder="Search sequence names &amp; sources…">
+      <label class="toggle" title="When a name appears on more than one record, append the source-file stem (and a counter if needed) to keep every export name unique.">
+        <input type="checkbox" id="autoDisambig"> auto-disambiguate names
+      </label>
+      <button class="purple" onclick="addOutput()">+ Add output</button>
+      <button class="danger" onclick="resetAll()">Reset</button>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-scroll">
+        <table>
+          <thead><tr id="tableHead"></tr></thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="outputs-summary" id="outputsSummary"></div>
+
+    <div class="export-section">
+      <div class="export-info" id="exportInfo"></div>
+      <button class="success" onclick="downloadAllZip()" id="exportBtn">⬇ Download all (.zip)</button>
+    </div>
+  </div>
+
+  <div class="empty-state" id="emptyState">
+    <div class="icon">🧬</div>
+    <p>Load one or more FASTA files to get started.<br>GFF files are optional and are matched to sequences by seqid.<br><br>Then define output genomes and tick which sequences go into each.</p>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let records = [];          // { id, name, exportName, desc, sequence, length, gc, sourceFile }
+let outputs = [];          // { id, name, members:Set<recordId> }
+let gffBySeqid = {};       // seqid -> [ {cols:[...], raw} ]
+let gffFileNames = [];     // loaded gff file names
+let fastaFileNames = [];   // loaded fasta file names
+let sortCol = 'length';
+let sortDir = -1;          // -1 = desc
+let autoDisambiguate = false;
+let recordSeq = 0;
+let outputSeq = 0;
+
+// ── Parsing ──
+function parseFasta(text, sourceFile) {
+  const out = [];
+  let current = null;
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    if (line.startsWith('>')) {
+      if (current) out.push(current);
+      const header = line.slice(1).trim();
+      const spaceIdx = header.search(/\s/);
+      const name = spaceIdx === -1 ? header : header.slice(0, spaceIdx);
+      const desc = spaceIdx === -1 ? '' : header.slice(spaceIdx).trim();
+      current = { name, desc, chunks: [] };
+    } else if (current && line.trim()) {
+      current.chunks.push(line.trim());
+    }
+  }
+  if (current) out.push(current);
+
+  return out.map(s => {
+    const seq = s.chunks.join('');
+    const upper = seq.toUpperCase();
+    let gc = 0, total = 0;
+    for (let i = 0; i < upper.length; i++) {
+      const c = upper[i];
+      if (c === 'G' || c === 'C') { gc++; total++; }
+      else if (c === 'A' || c === 'T' || c === 'U') { total++; }
+    }
+    return {
+      id: 'r' + (recordSeq++),
+      name: s.name,
+      exportName: null,
+      desc: s.desc,
+      sequence: seq,
+      length: seq.length,
+      gc: total > 0 ? gc / total : 0,
+      sourceFile
+    };
+  });
+}
+
+function parseGff(text) {
+  // Returns feature lines grouped by seqid. Directives are regenerated on export,
+  // so we only keep feature rows. Parsing stops at a ##FASTA section if present.
+  const lines = text.split(/\r?\n/);
+  const feats = [];
+  for (const line of lines) {
+    if (line.trim() === '##FASTA') break;
+    if (line.startsWith('#') || line.trim() === '') continue;
+    const cols = line.split('\t');
+    if (cols.length < 9) continue;
+    feats.push({ cols, raw: line });
+  }
+  return feats;
+}
+
+// ── File loading ──
+function stem(name) { return name.replace(/\.[^.]+$/, ''); }
+function sanitize(s) { return s.replace(/\s+/g, '_').replace(/[^A-Za-z0-9._\-]/g, ''); }
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function loadFastaFiles(fileList) {
+  for (const file of fileList) {
+    const text = await file.text();
+    const recs = parseFasta(text, file.name);
+    records.push(...recs);
+    fastaFileNames.push({ name: file.name, count: recs.length });
+  }
+  document.getElementById('fastaBox').classList.add('loaded');
+  if (outputs.length === 0 && records.length > 0) addOutput();
+  rematchGff();
+  rebuild();
+}
+
+async function loadGffFiles(fileList) {
+  for (const file of fileList) {
+    const text = await file.text();
+    const feats = parseGff(text);
+    let n = 0;
+    for (const f of feats) {
+      const seqid = f.cols[0];
+      (gffBySeqid[seqid] = gffBySeqid[seqid] || []).push(f);
+      n++;
+    }
+    gffFileNames.push({ name: file.name, count: n });
+  }
+  document.getElementById('gffBox').classList.add('loaded');
+  rematchGff();
+  rebuild();
+}
+
+function featureCount(rec) { return (gffBySeqid[rec.name] || []).length; }
+
+function rematchGff() { /* matching is by name lookup at use time; nothing to precompute */ }
+
+// Seqids present in GFFs that match no loaded sequence.
+function orphanSeqids() {
+  const names = new Set(records.map(r => r.name));
+  return Object.keys(gffBySeqid).filter(sid => !names.has(sid));
+}
+
+// Snapshot the FileList into an array *before* any await — resetting input.value
+// empties the live FileList, which would otherwise truncate the async load loop.
+document.getElementById('fastaInput').addEventListener('change', e => { const files = [...e.target.files]; e.target.value=''; if (files.length) loadFastaFiles(files); });
+document.getElementById('gffInput').addEventListener('change', e => { const files = [...e.target.files]; e.target.value=''; if (files.length) loadGffFiles(files); });
+
+// Drag & drop highlighting (the hidden file input already accepts drops)
+for (const [boxId] of [['fastaBox'],['gffBox']]) {
+  const box = document.getElementById(boxId);
+  box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('dragover'); });
+  box.addEventListener('dragleave', () => box.classList.remove('dragover'));
+  box.addEventListener('drop', () => box.classList.remove('dragover'));
+}
+
+// ── Outputs ──
+function addOutput() {
+  outputSeq++;
+  outputs.push({ id: 'o' + outputSeq, name: 'genome_' + outputSeq, members: new Set() });
+  rebuild();
+}
+
+function removeOutput(oid) {
+  outputs = outputs.filter(o => o.id !== oid);
+  rebuild();
+}
+
+function renameOutput(oid, value) {
+  const o = outputs.find(o => o.id === oid);
+  if (o) o.name = sanitize(value) || o.name;
+}
+
+function toggleMember(oid, rid, checked) {
+  const o = outputs.find(o => o.id === oid);
+  if (!o) return;
+  if (checked) o.members.add(rid); else o.members.delete(rid);
+  rebuild();
+}
+
+function toggleOutputAll(oid, checked) {
+  const o = outputs.find(o => o.id === oid);
+  if (!o) return;
+  const visible = visibleRecords();
+  for (const r of visible) { if (checked) o.members.add(r.id); else o.members.delete(r.id); }
+  rebuild();
+}
+
+// ── Export-name resolution ──
+// Returns a map recordId -> final export name, applying auto-disambiguation if enabled.
+function resolveExportNames() {
+  const base = {};
+  for (const r of records) base[r.id] = r.exportName || r.name;
+  const map = {};
+  if (!autoDisambiguate) { for (const r of records) map[r.id] = base[r.id]; return map; }
+
+  const counts = {};
+  for (const r of records) counts[base[r.id]] = (counts[base[r.id]] || 0) + 1;
+  const used = new Set();
+  for (const r of records) if (counts[base[r.id]] === 1) used.add(base[r.id]);
+  for (const r of records) {
+    const nm = base[r.id];
+    if (counts[nm] === 1) { map[r.id] = nm; continue; }
+    let cand = nm + '.' + sanitize(stem(r.sourceFile));
+    if (used.has(cand)) { let i = 2; while (used.has(cand + '.' + i)) i++; cand = cand + '.' + i; }
+    used.add(cand);
+    map[r.id] = cand;
+  }
+  return map;
+}
+
+// Per-output: names that collide among that output's members. Returns Map<oid, Set<recordId>>.
+function collisionInfo(nameMap) {
+  const result = {};
+  for (const o of outputs) {
+    const byName = {};
+    for (const rid of o.members) {
+      const nm = nameMap[rid];
+      (byName[nm] = byName[nm] || []).push(rid);
+    }
+    const bad = new Set();
+    for (const nm in byName) if (byName[nm].length > 1) byName[nm].forEach(rid => bad.add(rid));
+    result[o.id] = bad;
+  }
+  return result;
+}
+
+// ── Rendering ──
+function rebuild() {
+  if (records.length === 0) {
+    document.getElementById('workspace').style.display = 'none';
+    document.getElementById('emptyState').style.display = '';
+    renderChips();
+    return;
+  }
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('workspace').style.display = '';
+  renderChips();
+  renderStats();
+  renderTable();
+  renderOutputs();
+}
+
+function renderChips() {
+  const chips = [];
+  for (const f of fastaFileNames) {
+    chips.push(`<span class="file-chip fasta">🧬 ${escapeHtml(f.name)} <span class="chip-count">${f.count} seq</span></span>`);
+  }
+  for (const f of gffFileNames) {
+    chips.push(`<span class="file-chip gff">📋 ${escapeHtml(f.name)} <span class="chip-count">${f.count} feat</span></span>`);
+  }
+  document.getElementById('fileChips').innerHTML = chips.join('');
+}
+
+function fmtBp(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' Gb';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + ' Mb';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' kb';
+  return n.toLocaleString() + ' bp';
+}
+
+function renderStats() {
+  const totalBp = records.reduce((a, r) => a + r.length, 0);
+  const totalFeats = records.reduce((a, r) => a + featureCount(r), 0);
+  const orphans = orphanSeqids();
+  let html = `
+    <div class="stat"><strong>${records.length}</strong> sequences</div>
+    <div class="stat"><strong>${fmtBp(totalBp)}</strong> total</div>
+    <div class="stat green"><strong>${totalFeats.toLocaleString()}</strong> features matched</div>
+    <div class="stats-divider"></div>
+    <div class="stat purple"><strong>${outputs.length}</strong> output${outputs.length===1?'':'s'}</div>
+  `;
+  document.getElementById('statsBar').innerHTML = html;
+
+  const banner = document.getElementById('warnBanner');
+  if (orphans.length) {
+    const orphanFeats = orphans.reduce((a, sid) => a + gffBySeqid[sid].length, 0);
+    banner.style.display = '';
+    banner.textContent = `⚠ ${orphanFeats.toLocaleString()} GFF feature(s) reference ${orphans.length} seqid(s) with no matching sequence ` +
+      `(${orphans.slice(0,5).map(s=>s).join(', ')}${orphans.length>5?', …':''}). These are not included in any output.`;
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+function visibleRecords() {
+  const filter = document.getElementById('searchBox').value.toLowerCase();
+  let list = records.filter(r => {
+    if (!filter) return true;
+    return r.name.toLowerCase().includes(filter)
+        || (r.exportName && r.exportName.toLowerCase().includes(filter))
+        || r.sourceFile.toLowerCase().includes(filter);
+  });
+  list.sort((a, b) => {
+    let va, vb;
+    if (sortCol === '_feat') { va = featureCount(a); vb = featureCount(b); }
+    else if (sortCol === 'name') { va = (a.exportName||a.name); vb = (b.exportName||b.name); }
+    else if (sortCol === 'sourceFile') { va = a.sourceFile; vb = b.sourceFile; }
+    else { va = a[sortCol]; vb = b[sortCol]; }
+    if (typeof va === 'string') return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+  return list;
+}
+
+function renderTable() {
+  const nameMap = resolveExportNames();
+  const collisions = collisionInfo(nameMap);
+  const visible = visibleRecords();
+  const maxLen = Math.max(...records.map(r => r.length), 1);
+
+  const baseCols = [
+    { key: 'name', label: 'Sequence', sortable: true },
+    { key: 'sourceFile', label: 'Source', sortable: true },
+    { key: 'length', label: 'Length', sortable: true },
+    { key: 'gc', label: 'GC %', sortable: true },
+    { key: '_feat', label: 'Feats', sortable: true },
+  ];
+
+  let headHTML = baseCols.map(c => {
+    const sorted = sortCol === c.key;
+    const arrow = sorted ? (sortDir === 1 ? '▲' : '▼') : '';
+    return `<th class="sortable ${sorted?'sorted':''}" onclick="doSort('${c.key}')">${c.label}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join('');
+
+  for (const o of outputs) {
+    const memCount = o.members.size;
+    const memBp = [...o.members].reduce((a, rid) => { const r = records.find(x=>x.id===rid); return a + (r?r.length:0); }, 0);
+    const allVisChecked = visible.length > 0 && visible.every(r => o.members.has(r.id));
+    const collCount = collisions[o.id].size;
+    headHTML += `<th class="out-col">
+      <div class="out-head">
+        <div class="out-head-top">
+          <input class="out-name-input" type="text" value="${escapeHtml(o.name)}"
+                 onchange="renameOutput('${o.id}', this.value)" title="Output file name (without extension)">
+          <span class="out-remove" onclick="removeOutput('${o.id}')" title="Remove this output">✕</span>
+        </div>
+        <div class="out-meta">
+          <label class="out-selectall" title="Select all visible sequences for this output">
+            <input type="checkbox" ${allVisChecked?'checked':''} onchange="toggleOutputAll('${o.id}', this.checked)"> all
+          </label>
+          <span>${memCount} · ${fmtBp(memBp)}</span>
+          ${collCount ? `<span class="out-collision" title="Duplicate names in this output">⚠${collCount}</span>` : ''}
+        </div>
+      </div>
+    </th>`;
+  }
+  document.getElementById('tableHead').innerHTML = headHTML;
+
+  const rows = visible.map(r => {
+    const used = outputs.some(o => o.members.has(r.id));
+    const pctLen = (r.length / maxLen * 100).toFixed(1);
+    const gcPct = (r.gc * 100).toFixed(1);
+    const gcColor = r.gc < 0.35 ? 'var(--accent)' : r.gc > 0.65 ? 'var(--orange)' : 'var(--green)';
+    const feats = featureCount(r);
+    const isRenamed = !!r.exportName;
+    const finalName = nameMap[r.id];
+    const autoChanged = !isRenamed && finalName !== r.name;
+
+    let nameContent = `<span class="display-name">${escapeHtml(isRenamed ? r.exportName : r.name)}</span>`;
+    if (isRenamed) {
+      nameContent += `<span class="original-name">was: ${escapeHtml(r.name)}</span>`;
+      nameContent += `<span class="reset-rename" onclick="event.stopPropagation(); resetRename('${r.id}')" title="Reset to original name">✕</span>`;
+    } else {
+      nameContent += '<span class="edit-hint">✎</span>';
+    }
+    if (autoChanged) nameContent += `<span class="auto-name">→ ${escapeHtml(finalName)}</span>`;
+
+    let row = `<tr class="${used?'':'unused'}">`;
+    row += `<td class="seq-name ${isRenamed?'renamed':''}" title="${escapeHtml(r.desc || r.name)}" onclick="startRename(this, '${r.id}')">${nameContent}</td>`;
+    row += `<td class="source" title="${escapeHtml(r.sourceFile)}">${escapeHtml(r.sourceFile)}</td>`;
+    row += `<td class="numeric"><div class="len-cell"><span>${r.length.toLocaleString()}</span><div class="len-bar-track"><div class="len-bar" style="width:${pctLen}%"></div></div></div></td>`;
+    row += `<td class="numeric"><div class="gc-cell"><span>${gcPct}%</span><div class="gc-bar-track"><div class="gc-bar" style="width:${gcPct}%;background:${gcColor}"></div></div></div></td>`;
+    row += `<td class="numeric">${feats ? feats.toLocaleString() : '—'}</td>`;
+    for (const o of outputs) {
+      const checked = o.members.has(r.id);
+      const collide = checked && collisions[o.id].has(r.id);
+      row += `<td class="out-cell ${collide?'collide':''}"><input type="checkbox" ${checked?'checked':''} onchange="toggleMember('${o.id}','${r.id}', this.checked)"></td>`;
+    }
+    row += `</tr>`;
+    return row;
+  });
+  document.getElementById('tableBody').innerHTML = rows.join('');
+}
+
+function renderOutputs() {
+  const nameMap = resolveExportNames();
+  const collisions = collisionInfo(nameMap);
+  const cards = outputs.map(o => {
+    const mem = orderedMembers(o, nameMap);
+    const bp = mem.reduce((a, r) => a + r.length, 0);
+    const feats = mem.reduce((a, r) => a + featureCount(r), 0);
+    const hasGff = feats > 0;
+    const coll = collisions[o.id].size;
+    let warn = '';
+    if (mem.length === 0) warn = `<div class="out-warn">empty — no sequences selected</div>`;
+    else if (coll) warn = `<div class="out-warn err">⚠ ${coll} sequence(s) share a name — enable auto-disambiguate or rename them</div>`;
+    return `<div class="out-card">
+      <h3>${escapeHtml(o.name)}</h3>
+      <div class="out-stats">${mem.length} seq · ${fmtBp(bp)}${hasGff?` · ${feats.toLocaleString()} feat`:''}</div>
+      ${warn}
+      <div class="out-dl">
+        <button class="mini" ${mem.length?'':'disabled'} onclick="downloadOutput('${o.id}','fasta')">⬇ FASTA</button>
+        <button class="mini" ${hasGff?'':'disabled'} onclick="downloadOutput('${o.id}','gff')">⬇ GFF</button>
+      </div>
+    </div>`;
+  });
+  document.getElementById('outputsSummary').innerHTML = cards.join('');
+
+  // export info / button state
+  const totalFiles = outputs.reduce((a, o) => {
+    const mem = [...o.members];
+    if (!mem.length) return a;
+    const feats = mem.reduce((s, rid) => { const r = records.find(x=>x.id===rid); return s + (r?featureCount(r):0); }, 0);
+    return a + 1 + (feats > 0 ? 1 : 0);
+  }, 0);
+  const nonEmpty = outputs.filter(o => o.members.size > 0).length;
+  const anyCollision = outputs.some(o => collisions[o.id].size > 0);
+  document.getElementById('exportInfo').innerHTML =
+    `<strong>${nonEmpty}</strong> non-empty output${nonEmpty===1?'':'s'} → <strong>${totalFiles}</strong> file${totalFiles===1?'':'s'} in the zip` +
+    (anyCollision ? ` · <span style="color:var(--red)">resolve name collisions first</span>` : '');
+  document.getElementById('exportBtn').disabled = (nonEmpty === 0 || anyCollision);
+}
+
+// Members of an output in current table sort order, returning record objects.
+function orderedMembers(o, nameMap) {
+  return visibleRecordsAllOrder().filter(r => o.members.has(r.id));
+}
+
+// Like visibleRecords() but ignores the search filter (export should not depend on search).
+function visibleRecordsAllOrder() {
+  let list = [...records];
+  list.sort((a, b) => {
+    let va, vb;
+    if (sortCol === '_feat') { va = featureCount(a); vb = featureCount(b); }
+    else if (sortCol === 'name') { va = (a.exportName||a.name); vb = (b.exportName||b.name); }
+    else if (sortCol === 'sourceFile') { va = a.sourceFile; vb = b.sourceFile; }
+    else { va = a[sortCol]; vb = b[sortCol]; }
+    if (typeof va === 'string') return sortDir * va.localeCompare(vb);
+    return sortDir * (va - vb);
+  });
+  return list;
+}
+
+function doSort(col) {
+  if (sortCol === col) sortDir *= -1;
+  else { sortCol = col; sortDir = (col === 'name' || col === 'sourceFile') ? 1 : -1; }
+  rebuild();
+}
+
+document.getElementById('searchBox').addEventListener('input', () => { renderTable(); });
+document.getElementById('autoDisambig').addEventListener('change', e => { autoDisambiguate = e.target.checked; rebuild(); });
+
+// ── Rename ──
+function startRename(cell, rid) {
+  if (cell.querySelector('.rename-input')) return;
+  const r = records.find(x => x.id === rid);
+  const current = r.exportName || r.name;
+  cell.innerHTML = `<input class="rename-input" type="text" value="${escapeHtml(current)}"
+    onblur="commitRename('${rid}', this)"
+    onkeydown="if(event.key==='Enter'){this.blur();}if(event.key==='Escape'){this.dataset.cancel='1';this.blur();}">`;
+  const input = cell.querySelector('.rename-input');
+  input.focus();
+  input.select();
+}
+
+function commitRename(rid, input) {
+  const r = records.find(x => x.id === rid);
+  if (input.dataset.cancel === '1') { renderTable(); return; }
+  let trimmed = sanitize(input.value.trim());
+  r.exportName = (!trimmed || trimmed === r.name) ? null : trimmed;
+  rebuild();
+}
+
+function resetRename(rid) {
+  const r = records.find(x => x.id === rid);
+  r.exportName = null;
+  rebuild();
+}
+
+function resetAll() {
+  if (!confirm('Clear all loaded files and outputs?')) return;
+  records = []; outputs = []; gffBySeqid = {}; gffFileNames = []; fastaFileNames = [];
+  recordSeq = 0; outputSeq = 0;
+  document.getElementById('fastaBox').classList.remove('loaded');
+  document.getElementById('gffBox').classList.remove('loaded');
+  document.getElementById('searchBox').value = '';
+  rebuild();
+}
+
+// ── Build output files ──
+function buildFasta(o, nameMap) {
+  const mem = orderedMembers(o, nameMap);
+  const lines = [];
+  for (const r of mem) {
+    const nm = nameMap[r.id];
+    lines.push(r.desc ? `>${nm} ${r.desc}` : `>${nm}`);
+    for (let i = 0; i < r.sequence.length; i += 80) lines.push(r.sequence.slice(i, i + 80));
+  }
+  return lines.join('\n') + '\n';
+}
+
+function buildGff(o, nameMap) {
+  const mem = orderedMembers(o, nameMap);
+  const lines = ['##gff-version 3'];
+  // regenerated sequence-region directives from actual lengths
+  for (const r of mem) {
+    if (featureCount(r) > 0) lines.push(`##sequence-region ${nameMap[r.id]} 1 ${r.length}`);
+  }
+  for (const r of mem) {
+    const feats = gffBySeqid[r.name] || [];
+    const nm = nameMap[r.id];
+    for (const f of feats) {
+      const cols = f.cols.slice();
+      cols[0] = nm; // rewrite seqid to match the FASTA header
+      lines.push(cols.join('\t'));
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+function downloadOutput(oid, kind) {
+  const o = outputs.find(x => x.id === oid);
+  const nameMap = resolveExportNames();
+  if (kind === 'fasta') downloadBlob(buildFasta(o, nameMap), o.name + '.fasta');
+  else downloadBlob(buildGff(o, nameMap), o.name + '.gff');
+}
+
+function downloadBlob(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  triggerDownload(blob, filename);
+}
+
+function downloadAllZip() {
+  const nameMap = resolveExportNames();
+  const files = [];
+  const usedNames = {};
+  for (const o of outputs) {
+    if (o.members.size === 0) continue;
+    let base = o.name;
+    // guard against two outputs sharing a name inside the zip
+    if (usedNames[base]) { base = base + '.' + (++usedNames[o.name]); } else usedNames[base] = 1;
+    files.push({ name: base + '.fasta', data: new TextEncoder().encode(buildFasta(o, nameMap)) });
+    const feats = [...o.members].reduce((a, rid) => { const r = records.find(x=>x.id===rid); return a + (r?featureCount(r):0); }, 0);
+    if (feats > 0) files.push({ name: base + '.gff', data: new TextEncoder().encode(buildGff(o, nameMap)) });
+  }
+  if (!files.length) { alert('No non-empty outputs to export.'); return; }
+  const blob = makeZip(files);
+  triggerDownload(blob, 'combined_genomes.zip');
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ── Minimal store-only ZIP writer (no dependencies) ──
+function crc32(bytes) {
+  let table = crc32._t;
+  if (!table) {
+    table = crc32._t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 0xFF];
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+  const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  for (const f of files) {
+    const nameBytes = enc.encode(f.name);
+    const data = f.data;
+    const crc = crc32(data);
+    const local = new Uint8Array([].concat(
+      u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length),
+      u16(nameBytes.length), u16(0)
+    ));
+    chunks.push(local, nameBytes, data);
+    const cd = new Uint8Array([].concat(
+      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length),
+      u16(nameBytes.length), u16(0), u16(0), u16(0), u16(0),
+      u32(0), u32(offset)
+    ));
+    central.push(cd, nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  }
+
+  const cdStart = offset;
+  let cdSize = 0;
+  for (const c of central) cdSize += c.length;
+  const end = new Uint8Array([].concat(
+    u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+    u32(cdSize), u32(cdStart), u16(0)
+  ));
+
+  const all = chunks.concat(central, [end]);
+  let total = 0;
+  for (const c of all) total += c.length;
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of all) { out.set(c, p); p += c.length; }
+  return new Blob([out], { type: 'application/zip' });
+}
+</script>
+
+</body>
+</html>
