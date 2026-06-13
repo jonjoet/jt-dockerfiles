@@ -4,7 +4,7 @@ This repository holds various dockerfiles, devcontainer specs, and standalone br
 
 ## CLI Tools
 
-Dockerfiles for command-line utilities. Meant to be run with `docker run`. Most wrap publicly available software; some are custom.
+Dockerfiles for command-line utilities. Meant to be run with `docker run`. All wrap publicly available software, with some customization.
 
 | Tool | Description |
 |------|-------------|
