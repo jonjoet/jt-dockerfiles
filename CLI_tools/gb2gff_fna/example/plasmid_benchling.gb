@@ -1,0 +1,27 @@
+LOCUS       test_plasmid              60 bp ds-DNA     circular SYN 13-JUN-2026
+DEFINITION  synthetic test plasmid for gb2gff_fna.
+ACCESSION   .
+VERSION     .
+KEYWORDS    .
+SOURCE      synthetic DNA construct
+  ORGANISM  synthetic DNA construct
+            other sequences; artificial sequences.
+FEATURES             Location/Qualifiers
+     source          1..60
+                     /organism="synthetic DNA construct"
+                     /mol_type="other DNA"
+     promoter        1..10
+                     /label="J23100"
+                     /note="constitutive promoter"
+     CDS             11..40
+                     /label="GFP"
+                     /codon_start=1
+                     /note="reporter"
+     primer_bind     41..50
+                     /label="seq_fwd"
+     rep_origin      join(55..60,1..5)
+                     /label="ori_wrap"
+                     /note="origin-crossing feature"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc
+//

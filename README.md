@@ -9,6 +9,7 @@ Dockerfiles for command-line utilities. Meant to be run with `docker run`. Most 
 | Tool | Description |
 |------|-------------|
 | [ColonyGroundedSAM2](CLI_tools/ColonyGroundedSAM2/) | GPU-accelerated colony segmentation with Grounded SAM2 |
+| [gb2gff_fna](CLI_tools/gb2gff_fna/) | Convert GenBank to GFF3 + nucleotide FASTA (tuned for Benchling plasmid maps) |
 | [Hashdeep](CLI_tools/Hashdeep/) | Recursive file hashing for verifying large-scale transfers |
 | [jt_escher](CLI_tools/jt_escher/) | Escher metabolic pathway map CLI renderer |
 | [ml_colonies](CLI_tools/ml_colonies/) | ML-based colony counting |
