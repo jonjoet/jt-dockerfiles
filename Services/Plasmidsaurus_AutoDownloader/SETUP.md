@@ -160,7 +160,10 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX + AF_NETLINK are needed for hostname resolution (systemd-resolved /
+# nscd socket, and getaddrinfo's interface enumeration) — without them DNS
+# can fail. AF_INET/AF_INET6 are the actual outbound connections.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # ProtectSystem=strict makes the filesystem read-only EXCEPT what you list here.
 # The script must be able to write to the destination folder:
 ReadWritePaths=<<DATA_DIR>>
@@ -182,8 +185,10 @@ Description=Run Plasmidsaurus autofetch on a schedule
 
 [Timer]
 OnCalendar=<<SCHEDULE>>
-Persistent=true          # run once on boot if a scheduled run was missed
-RandomizedDelaySec=60    # small jitter so we don't hit the API on the exact tick
+# Persistent: run once on boot if a scheduled run was missed
+Persistent=true
+# RandomizedDelaySec: small jitter so we don't hit the API on the exact tick
+RandomizedDelaySec=60
 
 [Install]
 WantedBy=timers.target
@@ -206,7 +211,7 @@ sudo -u <<SERVICE_USER>> bash -c \
 
 # 9b. One real run via systemd, then read the log:
 sudo systemctl start plasmidsaurus-autofetch.service
-journalctl -u plasmidsaurus-autofetch.service -n 50 --no-pager
+sudo journalctl -u plasmidsaurus-autofetch.service -n 50 --no-pager
 ```
 
 Confirm files landed:
@@ -230,7 +235,7 @@ systemctl list-timers plasmidsaurus-autofetch.timer   # shows next run time
 ## 11. Day-to-day: where to look
 
 - **Live status / recent runs:** `systemctl status plasmidsaurus-autofetch.timer`
-- **Logs (system):** `journalctl -u plasmidsaurus-autofetch.service`
+- **Logs (system):** `sudo journalctl -u plasmidsaurus-autofetch.service`
 - **Logs (on the share, next to the data):** `<<DATA_DIR>>/_autofetch.log`
 - **What's been fetched:** one folder per order code under `<<DATA_DIR>>`, each
   with a `.complete` manifest once fully downloaded.
