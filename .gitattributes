@@ -1,0 +1,4 @@
+# Single-file build of Cloudflare's HAR Sanitizer — ~180 KB of bundled
+# upstream JavaScript. Exclude it from GitHub's language stats so the
+# language bar reflects this repo's own code rather than vendored JS.
+Standalone_HTML/har-sanitizer/har_sanitizer.html linguist-vendored
