@@ -1,5 +1,5 @@
 # Brief general description
-This repository holds various dockerfiles and devcontainer specification folders for various purposes. I've categorized them into three categories: CLI tools, meant to be run with docker run; webservers, meant to expose an interactive webpage/app on a forwarded port; and devcontainers, which are devcontainer specification folders (devcontainer.json plus optional scripts and dockerfiles).
+This repository holds various dockerfiles, devcontainer specification folders, background services, and standalone browser tools for various purposes. I've categorized them into five categories: CLI tools, meant to be run with docker run; webservers, meant to expose an interactive webpage/app on a forwarded port; devcontainers, which are devcontainer specification folders (devcontainer.json plus optional scripts and dockerfiles); services, which are long-running or scheduled background jobs meant to run unattended on a VM (e.g. as a systemd service/timer, shipping a setup guide in place of a Dockerfile); and standalone HTML, single-file JavaScript apps that run in the browser without installation.
 
 # Coding guidelines
 

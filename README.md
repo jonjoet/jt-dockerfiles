@@ -1,6 +1,6 @@
 # Not just dockerfiles!
 
-This repository holds various dockerfiles, devcontainer specs, and standalone browser tools for bioinformatics and molecular biology work.
+This repository holds various dockerfiles, devcontainer specs, background services, and standalone browser tools for bioinformatics and molecular biology work.
 
 ## CLI Tools
 
@@ -41,6 +41,14 @@ Devcontainer specs (devcontainer.json + optional Dockerfiles/scripts) for data a
 | [jt_FBA](Dev_containers/jt_FBA/) | Flux balance analysis and metabolic modeling |
 | [jt_latex](Dev_containers/jt_latex/) | LaTeX document authoring |
 | [jt_quarto](Dev_containers/jt_quarto/) | Data analysis in R (tidyverse + Quarto), with Python via reticulate |
+
+## Services
+
+Long-running or scheduled background jobs, meant to run unattended on a VM (e.g. as a systemd service/timer). Each ships a setup guide in place of a Dockerfile.
+
+| Service | Description |
+|---------|-------------|
+| [Plasmidsaurus_AutoDownloader](Services/Plasmidsaurus_AutoDownloader/) | Stdlib-only Python script that auto-downloads finished Plasmidsaurus sequencing orders to a mounted share on a schedule (see [SETUP.md](Services/Plasmidsaurus_AutoDownloader/SETUP.md)) |
 
 ## Standalone HTML
 
