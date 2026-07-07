@@ -161,7 +161,11 @@ def acquire_lock(data_dir: Path) -> Path:
         if _lock_is_stale(info_path):
             log.warning("Reclaiming stale lock at %s", lock_dir)
             shutil.rmtree(lock_dir, ignore_errors=True)
-            lock_dir.mkdir()  # if this races and fails, we correctly bail out
+            try:
+                lock_dir.mkdir()
+            except FileExistsError:
+                # Another run reclaimed it first; treat as busy and bail cleanly.
+                raise LockBusy()
         else:
             raise LockBusy()
     info_path.write_text(
@@ -270,6 +274,11 @@ def download_stream(url: str, dest: Path) -> int:
     the server provides it. The .part file guarantees a half-download is never
     mistaken for a finished one.
     """
+    # Defence-in-depth: never let a link from the API send urllib to file://,
+    # ftp://, data:, etc. (Don't log the URL -- presigned links carry secrets.)
+    scheme = urllib.parse.urlparse(url).scheme
+    if scheme != "https":
+        raise RetryableError(f"refusing download link with non-https scheme {scheme!r}")
     part = dest.with_suffix(dest.suffix + ".part")
     written = 0
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -354,18 +363,49 @@ def parse_since():
         return None
 
 
+def _parse_done(done: str):
+    """API done_date -> aware UTC datetime, or None if unparseable.
+
+    Handles a trailing 'Z' (Python <3.11 fromisoformat can't) and assumes UTC
+    for naive timestamps, so comparisons against `since` never raise TypeError.
+    """
+    s = done.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _usable_code(code) -> bool:
+    """True if `code` is safe as a single folder / filename component.
+
+    Rejects missing/empty values and anything that could escape DATA_DIR
+    (path separators, '.'/'..', NULs). Codes come from the API -- including
+    items other people shared with you -- so we don't assume they're well-formed.
+    """
+    return (
+        isinstance(code, str)
+        and code not in ("", ".", "..")
+        and not any(c in code for c in ("/", "\\", "\x00"))
+    )
+
+
 def select_pending(items: list, since):
     pending = []
     for item in items:
         if item.get("status") != "complete":
             continue
+        if not _usable_code(item.get("code")):
+            log.warning("Skipping item with missing/unsafe code: %r", item.get("code"))
+            continue
         done = item.get("done_date")
         if since and done:
-            try:
-                if datetime.fromisoformat(done) < since:
-                    continue
-            except ValueError:
-                pass  # unparseable date -> don't exclude it
+            dt = _parse_done(done)
+            if dt is not None and dt < since:
+                continue
         pending.append(item)
     return pending
 
