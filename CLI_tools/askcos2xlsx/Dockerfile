@@ -8,8 +8,9 @@
 FROM python:3.12-slim
 
 # RDKit's Cairo drawing (route/structure images) needs these shared libs at runtime.
+# libexpat1 provides libexpat.so.1, pulled in by Cairo/Pango during PNG rendering.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libxrender1 libxext6 \
+        libxrender1 libxext6 libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

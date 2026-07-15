@@ -58,7 +58,13 @@ type is `chemical` or `reaction`), and `edges` (`from`/`to`). Edge direction is
 
 ## Output
 
-**Routes** — one row per pathway, with three parallel one-cell views of the whole route:
+**Routes** — one row per pathway. It leads with the two endpoints of the route, each
+described by a matching trio of columns: `target` / `target_formula` /
+`target_mol_weight` (the desired product) and `feedstock` / `feedstock_formula` /
+`feedstock_mol_weight` (the route's ultimate starting material along the main scaffold —
+the compound at the bottom of the backbone the `structures pathway` image follows).
+Minor co-reactants aren't summarised here; every starting material is on the Chemicals
+sheet. Then three parallel one-cell views of the whole route:
 
 - `formulae pathway` — each step as `reactants -> product` using molecular formulae
 - `names pathway` — the same, using compound names (falls back to formula when a name

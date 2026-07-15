@@ -184,6 +184,9 @@ def parse_tree(tree):
         "num_chemicals": len(chem_ids),
         "num_starting_materials": sum(1 for r in chem_role.values() if r == "starting_material"),
         "backbone_fwd": backbone_fwd, "backbone_lab": backbone_lab,
+        # main-scaffold feedstock: the ultimate starting material on the backbone
+        # (backbone_fwd is forward/synthesis order, so index 0 is the deepest SM).
+        "feedstock_smiles": backbone_fwd[0] if backbone_fwd else "",
     }
 
 
@@ -293,10 +296,13 @@ def build_tables(trees, online=False):
         p = parse_tree(tree)
         g = p["graph"]
         _, tform, tmw, _, _ = props(p["root_smiles"])
+        _, fform, fmw, _, _ = props(p["feedstock_smiles"])
 
         route = {
             "pathway_id": idx, "target": p["root_smiles"],
             "target_formula": tform, "target_mol_weight": tmw,
+            "feedstock": p["feedstock_smiles"],
+            "feedstock_formula": fform, "feedstock_mol_weight": fmw,
             "num_chemicals": p["num_chemicals"],
             "num_starting_materials": p["num_starting_materials"],
             COL_FORMULAE: summary(p["steps"], _formula),
@@ -441,6 +447,7 @@ def _fill_names_and_cas(chem_rows):
 
 def routes_columns(no_structures):
     cols = ["pathway_id", "target", "target_formula", "target_mol_weight",
+            "feedstock", "feedstock_formula", "feedstock_mol_weight",
             COL_FORMULAE, COL_NAMES]
     if not no_structures:
         cols.append(COL_STRUCTURES)
@@ -490,7 +497,7 @@ def write_xlsx(path, routes, steps, chems, reactions, include_reactions,
     body_font = Font(name="Arial")
     float_cols = {"atom_economy", "score", "avg_score", "min_score", "first_step_score",
                   "avg_plausibility", "min_plausibility", "first_step_plausibility",
-                  "target_mol_weight", "mol_weight"}
+                  "target_mol_weight", "feedstock_mol_weight", "mol_weight"}
     text_cols = {COL_FORMULAE, COL_NAMES}
 
     sheets = [("Routes", routes_columns(no_structures), routes),
@@ -512,7 +519,7 @@ def write_xlsx(path, routes, steps, chems, reactions, include_reactions,
                 c = ws.cell(row=i, column=j, value=v)
                 c.font = body_font
                 if col in float_cols and isinstance(v, float):
-                    c.number_format = "0.00" if col in ("mol_weight", "target_mol_weight") else "0.000"
+                    c.number_format = "0.00" if col in ("mol_weight", "target_mol_weight", "feedstock_mol_weight") else "0.000"
                 if col in text_cols and isinstance(v, str) and v:
                     c.alignment = Alignment(wrap_text=True, vertical="top")
                     row_pt = max(row_pt or 0, 14 * (v.count("\n") + 1))
