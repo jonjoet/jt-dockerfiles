@@ -4,11 +4,12 @@ FROM mambaorg/micromamba:1.5.8
 
 WORKDIR /data
 
-# biopython powers the conversion; agat provides the optional GFF3 standardizer
-# used by --validate (and pulls in Perl/BioPerl as a side effect).
-RUN micromamba install -y -n base -c bioconda -c conda-forge \
-        biopython \
-        agat \
+# Pin the supported runtime and core libraries so conversions remain
+# reproducible. gffutils supplies an independent parser for --validate.
+RUN micromamba install -y -n base -c conda-forge -c bioconda \
+        python=3.11 \
+        biopython=1.87 \
+        gffutils=0.14 \
     && micromamba clean --all --yes
 
 # The converter script lives outside /data so it is never shadowed by a mount.

@@ -1,0 +1,86 @@
+LOCUS       EDGE_LINEAR              120 bp ds-DNA     linear   SYN 24-JUL-2026
+DEFINITION  Synthetic genomic relationship and phase fixture.
+ACCESSION   EDGE_LINEAR
+VERSION     EDGE_LINEAR.1
+KEYWORDS    .
+SOURCE      synthetic DNA construct
+  ORGANISM  synthetic DNA construct
+            other sequences; artificial sequences.
+FEATURES             Location/Qualifiers
+     source          1..120
+                     /organism="synthetic DNA construct"
+                     /mol_type="other DNA"
+     gene            1..120
+                     /gene="ALT"
+                     /locus_tag="ALT"
+     mRNA            join(1..30,61..90)
+                     /gene="ALT"
+                     /locus_tag="ALT"
+                     /transcript_id="ALT-T1"
+     CDS             join(4..30,61..87)
+                     /gene="ALT"
+                     /locus_tag="ALT"
+                     /transcript_id="ALT-T1"
+                     /protein_id="ALT-P1"
+                     /codon_start=2
+     mRNA            join(1..20,91..120)
+                     /gene="ALT"
+                     /locus_tag="ALT"
+                     /transcript_id="ALT-T2"
+     CDS             join(4..20,91..117)
+                     /gene="ALT"
+                     /locus_tag="ALT"
+                     /transcript_id="ALT-T2"
+                     /protein_id="ALT-P2"
+                     /codon_start=3
+     gene            complement(10..110)
+                     /gene="NEG"
+                     /locus_tag="NEG"
+     mRNA            complement(join(10..40,70..110))
+                     /gene="NEG"
+                     /locus_tag="NEG"
+                     /transcript_id="NEG-T1"
+     CDS             complement(join(12..35,75..108))
+                     /gene="NEG"
+                     /locus_tag="NEG"
+                     /transcript_id="NEG-T1"
+                     /protein_id="NEG-P1"
+                     /codon_start=1
+     gene            42..55
+                     /gene="PROC"
+                     /locus_tag="PROC"
+     CDS             42..55
+                     /gene="PROC"
+                     /locus_tag="PROC"
+                     /protein_id="PROC-P1"
+                     /codon_start=1
+     misc_feature    REMOTE.1:1..5
+                     /label="remote feature"
+ORIGIN
+        1 aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa
+       61 aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa aaaaaaaaaa
+//
+LOCUS       EDGE_CIRCULAR             60 bp ds-DNA     circular SYN 24-JUL-2026
+DEFINITION  Synthetic circular origin and escaping fixture.
+ACCESSION   EDGE_CIRCULAR
+VERSION     EDGE_CIRCULAR.1
+KEYWORDS    .
+SOURCE      synthetic DNA construct
+  ORGANISM  synthetic DNA construct
+            other sequences; artificial sequences.
+FEATURES             Location/Qualifiers
+     rep_origin      join(55..60,1..5)
+                     /label="ori; one, 100% & ready"
+                     /note="exact boundary wrap"
+     CDS             join(50..55,1..5)
+                     /label="gapped wrap"
+                     /protein_id="WRAP-P"
+                     /codon_start=3
+     misc_feature    10^11
+                     /label="zero-width site"
+     misc_feature    20..25
+                     /label="unknown key carrier"
+                     /pseudo
+ORIGIN
+        1 cccccccccc cccccccccc cccccccccc cccccccccc cccccccccc cccccccccc
+//
