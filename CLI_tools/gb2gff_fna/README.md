@@ -3,9 +3,9 @@
 Convert a **GenBank** file into a **GFF3** annotation file plus a nucleotide
 **FASTA** (`.fna`), in one Docker container.
 
-It is tuned for **Benchling-exported plasmid maps** but is built to be robust on
-any GenBank input: it never tries to crash on unusual features, it uses the
-`/label` qualifier (Benchling's convention) as the GFF3 `Name`, and it correctly
+It supports both **Benchling-exported plasmid maps** and genomic GenBank
+records. It preserves explicit `gene → mRNA → CDS` relationships when the input
+contains evidence for them, keeps flat plasmid annotations flat, and correctly
 handles circular features that cross the origin.
 
 ## Why this tool exists
@@ -16,12 +16,9 @@ types:
 - **BioPerl's `bp_genbank2gff3`** is built for NCBI/genome records and *imposes*
   a `gene → mRNA → CDS` hierarchy. On flat plasmid maps it produces cluttered
   output and ignores `/label`.
-- **AGAT** can't read GenBank at all — its converters take GFF/GTF/BED/EMBL. It
-  *is* excellent at standardizing/validating an existing GFF3, which is why it's
-  available here as an optional post-processing step.
-
-So this tool uses a small Biopython converter (faithful, plasmid-friendly) and
-keeps AGAT on hand for an optional standardization pass.
+The converter therefore uses Biopython directly and includes a non-destructive
+validator. Validation checks the generated file without rewriting annotations
+or synthesizing a gene model.
 
 ## What it produces
 
@@ -29,8 +26,9 @@ For an input `myplasmid.gb` and output directory `out/`:
 
 - `out/myplasmid.fna` — nucleotide FASTA, one record per GenBank record.
 - `out/myplasmid.gff3` — GFF3 with a `##sequence-region` line per record and one
-  feature line per GenBank feature (multi-segment / origin-crossing features are
-  emitted as multiple lines sharing one `ID`).
+  feature line per GenBank feature. Genuine multi-segment features use repeated
+  rows with one shared `ID` and ordered `part=X/Y` attributes. An exact,
+  contiguous circular boundary wrap uses one virtual-coordinate row.
 
 The FASTA header and GFF3 `seqid` always match (the LOCUS name is used when the
 record has no accession, which is the usual case for Benchling exports).
@@ -79,38 +77,50 @@ gb2gff_fna.py INPUT.gb -o OUTDIR [--prefix NAME] [--source STR] [--validate]
 | `-o, --outdir` | Output directory (created if absent). Default: current dir. |
 | `--prefix` | Output basename. Default: input filename without extension. |
 | `--source` | Value for the GFF3 source column. Default: `GenBank`. |
-| `--validate` | Run the result through AGAT's GFF3 standardizer (see caveat). |
+| `--validate` | Validate the generated GFF3 without changing it. |
 
-## The `--validate` caveat (off by default)
+## Validation
 
-`--validate` runs the GFF3 through AGAT's `agat_convert_sp_gxf2gxf.pl`
-standardizer. AGAT is **gene-model-centric**: it will wrap bare CDS features into
-a tidy `gene → mRNA → exon → CDS` hierarchy, but it will also **drop features
-that don't fit a gene model** — including the `rep_origin`, `primer_bind`,
-`misc_feature`, and `promoter`-type features that make up most of a plasmid map.
+`--validate` performs structural checks and asks `gffutils` to parse the result.
+It verifies directives, columns, coordinates, strand and CDS phase values,
+sequence bounds, circular virtual coordinates, repeated-ID invariants,
+`part=X/Y` numbering, resolved `Parent` references, and acyclic hierarchy.
 
-So:
-
-- **Plasmid maps:** leave `--validate` **off**. The default output is the
-  faithful, complete representation you want.
-- **Genome / annotation-tool GenBank headed into a strict downstream tool:**
-  `--validate` can be useful to produce a clean, spec-normalized gene model.
-
-If AGAT fails for any reason, the raw (unvalidated) GFF3 is kept and the tool
-exits non-zero so the failure is visible.
+Validation never modifies the `.gff3`. A failure leaves both generated files in
+place, reports every detected error to standard error, and exits non-zero.
 
 ## How features are mapped
 
 - **Coordinates:** converted to GFF3's 1-based inclusive convention.
-- **Name** ← `/label`, then `/gene`, `/product`, `locus_tag`.
-- **ID:** `locus_tag` if present, else the Name, else `<type>_<n>`; made unique
-  across the whole file.
+- **Name:** selected by feature type from stable identifiers and useful labels.
+- **ID:** prefers `locus_tag` for genes, `transcript_id` for transcripts, and
+  `protein_id` for CDS features; every ID is made unique across the whole file.
 - **Type:** common GenBank keys are mapped to valid Sequence Ontology terms
   (e.g. `rep_origin` → `origin_of_replication`, `primer_bind` →
-  `primer_binding_site`); unrecognized keys pass through unchanged.
-- **Parent:** a CDS/mRNA is linked to a `gene` feature only when they share a
-  `locus_tag`/`gene`; otherwise features stay flat (the plasmid default).
-- **Other qualifiers** are preserved as URL-escaped attributes; `/note` → `Note`.
+  `primer_binding_site`). Unrecognized keys become `sequence_feature`, with the
+  original key retained as `gbkey`.
+- **Parent:** transcript-to-gene and CDS/exon-to-transcript links require unique,
+  compatible qualifier and location evidence. CDS/exon features fall back to a
+  uniquely supported gene parent. Ambiguous relationships remain flat.
+- **Other qualifiers:** preserved as percent-escaped attributes; `/note` becomes
+  `Note`, `/db_xref` becomes `Dbxref`, and valueless flags become `true`.
+
+Remote-reference locations are skipped with a warning instead of being silently
+relocated onto the current record. Duplicate normalized record IDs are rejected.
+Real `accession.version` identifiers are preserved. Records without an accession
+fall back to their LOCUS name so FASTA headers and GFF3 seqids stay aligned.
+Unknown strand is emitted as `.`, while an explicitly relevant but unknown
+strand is emitted as `?`.
+
+For circular records, a full-length `region` feature receives
+`Is_circular=true`; one is synthesized when absent. Exact contiguous wraps can
+extend to at most one landmark length beyond the sequence end, as allowed by
+GFF3. Gapped compound features remain separate ordered parts.
+
+GFF3 cannot preserve every GenBank location expression exactly. Fuzzy endpoints
+are emitted as warned integer approximations; remote locations are skipped; and
+the distinction between `join` and `order` is not retained beyond ordered
+`part=X/Y` rows.
 
 ## Example
 
@@ -121,9 +131,19 @@ test.
 
 ## Notes
 
-- Built on the `mambaorg/micromamba` base; installs `biopython` and `agat` from
-  bioconda/conda-forge. (AGAT pulls in Perl/BioPerl, so `bp_genbank2gff3` is also
-  present in the image if you ever want it.)
-- Out of scope for now: genome-grade hierarchy reconstruction for complex
-  eukaryotic GenBank, embedded-FASTA single-file output, and per-record split
-  files.
+- Built on `mambaorg/micromamba` with Python 3.11, Biopython 1.87, and
+  gffutils 0.14.
+- The converter preserves evidenced hierarchy; it does not invent missing
+  transcripts or attempt biological reconstruction from coordinates alone.
+- Embedded-FASTA single-file output and per-record split files are out of scope.
+
+## Tests
+
+Run the Docker-only regression and smoke suite:
+
+```bash
+./tests/run_tests.sh
+```
+
+The harness mounts only this tool directory and writes timestamped evidence
+under `tests/runs/run_*/` (ignored by Git).

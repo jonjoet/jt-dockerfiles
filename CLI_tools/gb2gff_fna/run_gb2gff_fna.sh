@@ -8,7 +8,7 @@ set -euo pipefail
 INPUT_FILE="./example/plasmid_benchling.gb"  # host path to input GenBank file
 OUTPUT_DIR="./gb2gff_fna_output"             # host dir for .fna + .gff3
 PREFIX=""                                    # output basename (empty = input name)
-VALIDATE=0                                   # 1 = run AGAT standardizer, 0 = skip
+VALIDATE=0                                   # 1 = validate GFF3, 0 = skip
 SOURCE="GenBank"                             # value for the GFF3 source column
 
 IMAGE="gb2gff_fna:latest"
@@ -44,6 +44,7 @@ ARGS=(-o /data/output --source "$SOURCE")
 [[ "$VALIDATE" == "1" ]] && ARGS+=(--validate)
 
 docker run --rm \
+    --user "$(id -u):$(id -g)" \
     -v "$INPUT_DIR:/data/input:ro" \
     -v "$OUTPUT_DIR:/data/output" \
     "$IMAGE" \

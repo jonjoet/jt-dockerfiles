@@ -10,7 +10,7 @@ Dockerfiles for command-line utilities. Meant to be run with `docker run`. All w
 |------|-------------|
 | [askcos2xlsx](CLI_tools/askcos2xlsx/) | Convert an ASKCOS retrosynthesis Tree Builder export to an Excel workbook (routes, steps, chemicals, reaction schemes) |
 | [ColonyGroundedSAM2](CLI_tools/ColonyGroundedSAM2/) | GPU-accelerated colony segmentation with Grounded SAM2 |
-| [gb2gff_fna](CLI_tools/gb2gff_fna/) | Convert GenBank to GFF3 + nucleotide FASTA (tuned for Benchling plasmid maps) |
+| [gb2gff_fna](CLI_tools/gb2gff_fna/) | Convert GenBank to genomic/plasmid GFF3 + nucleotide FASTA with non-destructive validation |
 | [Hashdeep](CLI_tools/Hashdeep/) | Recursive file hashing for verifying large-scale transfers |
 | [jt_escher](CLI_tools/jt_escher/) | Escher metabolic pathway map CLI renderer |
 | [ml_colonies](CLI_tools/ml_colonies/) | ML-based colony counting |
