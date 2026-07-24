@@ -1,0 +1,8 @@
+##gff-version 3
+##sequence-region test_plasmid 1 60
+test_plasmid	GenBank	region	1	60	.	+	.	ID=source_1;mol_type=other%20DNA;organism=synthetic%20DNA%20construct
+test_plasmid	GenBank	promoter	1	10	.	+	.	ID=J23100;Name=J23100;label=J23100;Note=constitutive%20promoter
+test_plasmid	GenBank	CDS	11	40	.	+	0	ID=GFP;Name=GFP;codon_start=1;label=GFP;Note=reporter
+test_plasmid	GenBank	primer_binding_site	41	50	.	+	.	ID=seq_fwd;Name=seq_fwd;label=seq_fwd
+test_plasmid	GenBank	origin_of_replication	55	60	.	+	.	ID=ori_wrap;Name=ori_wrap;label=ori_wrap;Note=origin-crossing%20feature
+test_plasmid	GenBank	origin_of_replication	1	5	.	+	.	ID=ori_wrap;Name=ori_wrap;label=ori_wrap;Note=origin-crossing%20feature

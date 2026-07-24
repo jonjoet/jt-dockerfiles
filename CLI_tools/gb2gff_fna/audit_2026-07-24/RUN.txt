@@ -1,0 +1,36 @@
+Audit date: 2026-07-24
+Repository: /mnt/internal_hdd/claude_code/jt-dockerfiles
+Commit: f4b251af387870e0aedb42473c9e1fb338bee8fe
+Purpose: Codex forward-converter audit supporting the implementation plan.
+
+Rules:
+- Docker-only dependency execution; no host Python packages installed.
+- Only CLI_tools/gb2gff_fna is mounted into test containers.
+- No host directory outside the tool directory is mounted.
+
+Planned environment:
+- python:3.11-slim
+- biopython==1.87
+- gffutils==0.14
+
+Audit targets:
+- Compound and zero-length locations
+- codon_start validation and phase propagation
+- strand 0/None serialization
+- feature/record ID uniqueness
+- GFF3 attribute and seqid escaping
+- genomic gene/mRNA/CDS parenting
+- origin-spanning virtual-coordinate representation
+
+Executed three times while refining the probe:
+
+docker run --rm \
+  -v "$PWD/CLI_tools/gb2gff_fna:/work:ro" \
+  -w /work \
+  python:3.11-slim \
+  sh -c 'python -m pip install --quiet --disable-pip-version-check biopython==1.87 gffutils==0.14 && python audit_2026-07-24/probe_forward_edges.py'
+
+External read-only evidence:
+- Sequence Ontology GFF3 specification
+- NCBI GFF3 documentation
+- NCBI GenBank record AC005021.1

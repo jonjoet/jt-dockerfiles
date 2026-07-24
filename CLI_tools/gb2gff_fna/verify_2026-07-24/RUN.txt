@@ -1,0 +1,22 @@
+commit:  f4b251af387870e0aedb42473c9e1fb338bee8fe   dirty: yes
+started: 2026-07-24T14:34:27-04:00
+purpose: probe — verify codex design-review claims before editing the bidirectional spec
+         (1) does BCBio.GFF.parse merge repeated-ID rows into a CompoundLocation?
+         (2) does Biopython store complement(join(...)) parts in biological order,
+             making cds_phases() double-reverse on minus strand?
+         NOTE: dirty tree = untracked new spec + this dir; gb2gff_fna.py itself UNMODIFIED at this commit.
+
+--- second probe round ---
+started: 2026-07-24T14:54:39-04:00
+commit:  f4b251af387870e0aedb42473c9e1fb338bee8fe (gb2gff_fna.py still UNMODIFIED)
+dirty:   yes (spec revised; verify dir untracked)
+purpose: evaluate gffutils as an alternative to the rejected bcbio-gff.
+         Does it coalesce duplicate-ID rows WITHOUT collapsing to a min/max span?
+         Inputs read: fwd/plasmid_benchling.gff3 (generated this run, same commit).
+
+--- third probe round ---
+started: 2026-07-24T15:43:50-04:00
+commit:  f4b251af387870e0aedb42473c9e1fb338bee8fe (gb2gff_fna.py still UNMODIFIED)
+purpose: origin-SPANNING CDS (not rep_origin) — part order + phase, both strands.
+         The example fixture's only origin-crossing feature is a rep_origin, so
+         no phase is ever computed for it. Untested interaction with the F1 bug.
