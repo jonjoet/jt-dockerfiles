@@ -427,6 +427,42 @@
     color: var(--yellow);
   }
 
+  .warn-banner.error {
+    color: var(--red);
+    border-color: var(--red);
+    background: var(--red-dim);
+    white-space: pre-wrap;
+  }
+
+  .ambiguity-panel {
+    display: none;
+    background: var(--purple-dim);
+    border: 1px solid var(--purple);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+
+  .ambiguity-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+
+  .ambiguity-row select {
+    padding: 4px 7px;
+    border: 1px solid var(--purple);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+  }
+
   @media (max-width: 900px) {
     .upload-area { grid-template-columns: 1fr; }
   }
@@ -448,7 +484,7 @@
       <div class="hint">.fasta, .fa, .fna — drop multiple, they accumulate</div>
     </label>
     <label class="upload-box" id="gffBox">
-      <input type="file" id="gffInput" accept=".gff,.gff3,.gtf,.txt" multiple>
+      <input type="file" id="gffInput" accept=".gff,.gff3,.txt" multiple>
       <div class="file-icon">📋</div>
       <div class="label">GFF files</div>
       <div class="hint">.gff, .gff3 (optional) — matched to sequences by seqid</div>
@@ -456,10 +492,10 @@
   </div>
 
   <div class="file-chips" id="fileChips"></div>
+  <div id="warnBanner" class="warn-banner" style="display:none;"></div>
+  <div id="ambiguityPanel" class="ambiguity-panel"></div>
 
   <div id="workspace" style="display:none;">
-    <div id="warnBanner" class="warn-banner" style="display:none;"></div>
-
     <div class="stats-bar" id="statsBar"></div>
 
     <div class="controls-bar">
@@ -496,38 +532,66 @@
 
 <script>
 // ── State ──
-let records = [];          // { id, name, exportName, desc, sequence, length, gc, sourceFile }
+let records = [];          // { id, name, exportName, desc, sequence, length, gc, sourceFile, sourceId }
 let outputs = [];          // { id, name, members:Set<recordId> }
-let gffBySeqid = {};       // seqid -> [ {cols:[...], raw} ]
-let gffFileNames = [];     // loaded gff file names
-let fastaFileNames = [];   // loaded fasta file names
+let gffSources = [];       // { id, name, features, bySeqid, directives, errors, warnings }
+let gffAssignments = new Map(); // ambiguity key -> recordId
+let fastaFileNames = [];   // { id, name, count, errors, warnings }
 let sortCol = 'length';
 let sortDir = -1;          // -1 = desc
 let autoDisambiguate = false;
 let recordSeq = 0;
 let outputSeq = 0;
+let fastaSourceSeq = 0;
+let gffSourceSeq = 0;
+let loadGeneration = 0;
+let fastaLoadChain = Promise.resolve();
+let gffLoadChain = Promise.resolve();
+const MAX_ZIP_BYTES = 512 * 1024 * 1024;
 
 // ── Parsing ──
-function parseFasta(text, sourceFile) {
+function splitLines(text) {
+  return String(text).replace(/^\uFEFF/, '').split(/\r\n|\n|\r/);
+}
+
+function maxSequenceLength(list) {
+  let max = 1;
+  for (const record of list) if (record.length > max) max = record.length;
+  return max;
+}
+
+function parseFastaDetailed(text, sourceFile, sourceId = sourceFile) {
   const out = [];
+  const errors = [];
+  const warnings = [];
   let current = null;
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
+  const lines = splitLines(text);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (line.startsWith('>')) {
       if (current) out.push(current);
       const header = line.slice(1).trim();
       const spaceIdx = header.search(/\s/);
       const name = spaceIdx === -1 ? header : header.slice(0, spaceIdx);
       const desc = spaceIdx === -1 ? '' : header.slice(spaceIdx).trim();
-      current = { name, desc, chunks: [] };
+      if (!name) errors.push(`line ${i + 1}: FASTA identifier is empty`);
+      current = { name, desc, chunks: [], lineNo: i + 1 };
     } else if (current && line.trim()) {
-      current.chunks.push(line.trim());
+      const normalized = line.replace(/\s+/g, '');
+      if (normalized !== line) warnings.push(`line ${i + 1}: removed whitespace from sequence data`);
+      if (/[^ACGTURYSWKMBDHVN.*?\-]/i.test(normalized)) {
+        warnings.push(`line ${i + 1}: sequence contains non-IUPAC symbols`);
+      }
+      current.chunks.push(normalized);
+    } else if (!current && line.trim()) {
+      errors.push(`line ${i + 1}: sequence data appears before the first FASTA header`);
     }
   }
   if (current) out.push(current);
 
-  return out.map(s => {
+  const recs = out.map(s => {
     const seq = s.chunks.join('');
+    if (!seq) warnings.push(`line ${s.lineNo}: FASTA record ${s.name || '(empty identifier)'} has no sequence data`);
     const upper = seq.toUpperCase();
     let gc = 0, total = 0;
     for (let i = 0; i < upper.length; i++) {
@@ -543,37 +607,107 @@ function parseFasta(text, sourceFile) {
       sequence: seq,
       length: seq.length,
       gc: total > 0 ? gc / total : 0,
-      sourceFile
+      sourceFile,
+      sourceId
     };
   });
+  return { records: recs, errors, warnings };
+}
+
+function parseFasta(text, sourceFile, sourceId = sourceFile) {
+  return parseFastaDetailed(text, sourceFile, sourceId).records;
+}
+
+function parseAttributes(text) {
+  const attrs = new Map();
+  if (!text || text === '.') return attrs;
+  for (const field of text.split(';')) {
+    if (!field) continue;
+    const eq = field.indexOf('=');
+    if (eq <= 0) continue;
+    attrs.set(field.slice(0, eq).trim(), field.slice(eq + 1).trim());
+  }
+  return attrs;
+}
+
+function parseGffDetailed(text) {
+  const lines = splitLines(text);
+  const features = [];
+  const directives = [];
+  const errors = [];
+  const warnings = [];
+  let inFasta = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const lineNo = i + 1;
+    if (inFasta) continue;
+    if (raw.trim() === '##FASTA') { inFasta = true; continue; }
+    if (raw.startsWith('##')) {
+      if (!raw.startsWith('##gff-version') && !raw.startsWith('##sequence-region') && raw !== '###') {
+        directives.push(raw);
+      }
+      continue;
+    }
+    if (raw.startsWith('#') || raw.trim() === '') continue;
+
+    const cols = raw.split('\t');
+    if (cols.length !== 9) {
+      errors.push(`line ${lineNo}: expected exactly 9 tab-separated GFF3 columns, found ${cols.length}`);
+      continue;
+    }
+    if (!cols[0] || /\s/.test(cols[0])) {
+      errors.push(`line ${lineNo}: GFF3 seqid is empty or contains whitespace`);
+      continue;
+    }
+    const start = Number(cols[3]), end = Number(cols[4]);
+    if (!/^\d+$/.test(cols[3]) || !/^\d+$/.test(cols[4]) || start < 1 || end < start) {
+      errors.push(`line ${lineNo}: invalid GFF3 coordinates ${cols[3]}..${cols[4]}`);
+      continue;
+    }
+    if (cols[5] !== '.' && !Number.isFinite(Number(cols[5]))) {
+      errors.push(`line ${lineNo}: GFF3 score must be numeric or '.'`);
+      continue;
+    }
+    if (!['+', '-', '.', '?'].includes(cols[6])) {
+      errors.push(`line ${lineNo}: invalid GFF3 strand '${cols[6]}'`);
+      continue;
+    }
+    if (!['0', '1', '2', '.'].includes(cols[7])) {
+      errors.push(`line ${lineNo}: invalid GFF3 phase '${cols[7]}'`);
+      continue;
+    }
+    const attributeEntries = cols[8].split(';').map(entry => entry.trim()).filter(Boolean);
+    const looksGtf = attributeEntries.length > 0 &&
+      attributeEntries.every(entry => /^[A-Za-z][A-Za-z0-9_]*\s+"[^"]*"$/.test(entry));
+    if (looksGtf) {
+      if (!cols[8].includes('=')) {
+        errors.push(`line ${lineNo}: attributes appear to use GTF syntax; GTF conversion is not supported`);
+        continue;
+      }
+      warnings.push(`line ${lineNo}: attributes may use GTF syntax; verify before export`);
+    }
+    features.push({ cols, raw, lineNo, start, end, attrs: parseAttributes(cols[8]) });
+  }
+  return { features, directives: [...new Set(directives)], errors, warnings };
 }
 
 function parseGff(text) {
-  // Returns feature lines grouped by seqid. Directives are regenerated on export,
-  // so we only keep feature rows. Parsing stops at a ##FASTA section if present.
-  const lines = text.split(/\r?\n/);
-  const feats = [];
-  for (const line of lines) {
-    if (line.trim() === '##FASTA') break;
-    if (line.startsWith('#') || line.trim() === '') continue;
-    const cols = line.split('\t');
-    if (cols.length < 9) continue;
-    feats.push({ cols, raw: line });
-  }
-  return feats;
+  return parseGffDetailed(text).features;
 }
 
 // ── File loading ──
 function stem(name) { return name.replace(/\.[^.]+$/, ''); }
 function sanitize(s) { return s.replace(/\s+/g, '_').replace(/[^A-Za-z0-9._\-]/g, ''); }
-function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
-async function loadFastaFiles(fileList) {
+async function loadFastaFiles(fileList, generation = loadGeneration) {
   for (const file of fileList) {
     const text = await file.text();
-    const recs = parseFasta(text, file.name);
-    records.push(...recs);
-    fastaFileNames.push({ name: file.name, count: recs.length });
+    if (generation !== loadGeneration) return;
+    const sourceId = 'f' + (++fastaSourceSeq);
+    const parsed = parseFastaDetailed(text, file.name, sourceId);
+    records.push(...parsed.records);
+    fastaFileNames.push({ id: sourceId, name: file.name, count: parsed.records.length, errors: parsed.errors, warnings: parsed.warnings });
   }
   document.getElementById('fastaBox').classList.add('loaded');
   if (outputs.length === 0 && records.length > 0) addOutput();
@@ -581,37 +715,113 @@ async function loadFastaFiles(fileList) {
   rebuild();
 }
 
-async function loadGffFiles(fileList) {
+async function loadGffFiles(fileList, generation = loadGeneration) {
   for (const file of fileList) {
     const text = await file.text();
-    const feats = parseGff(text);
-    let n = 0;
-    for (const f of feats) {
-      const seqid = f.cols[0];
-      (gffBySeqid[seqid] = gffBySeqid[seqid] || []).push(f);
-      n++;
+    if (generation !== loadGeneration) return;
+    const parsed = parseGffDetailed(text);
+    const source = {
+      id: 'g' + (++gffSourceSeq),
+      name: file.name,
+      features: parsed.features,
+      directives: parsed.directives,
+      errors: parsed.errors,
+      warnings: parsed.warnings,
+      bySeqid: new Map()
+    };
+    for (const feature of source.features) {
+      feature.gffSourceId = source.id;
+      const seqid = feature.cols[0];
+      if (!source.bySeqid.has(seqid)) source.bySeqid.set(seqid, []);
+      source.bySeqid.get(seqid).push(feature);
     }
-    gffFileNames.push({ name: file.name, count: n });
+    gffSources.push(source);
   }
   document.getElementById('gffBox').classList.add('loaded');
   rematchGff();
   rebuild();
 }
 
-function featureCount(rec) { return (gffBySeqid[rec.name] || []).length; }
+function assignmentKey(gffId, seqid) {
+  return `${gffId}|${encodeURIComponent(seqid)}`;
+}
 
-function rematchGff() { /* matching is by name lookup at use time; nothing to precompute */ }
+function candidateRecords(seqid) {
+  return records.filter(record => record.name === seqid);
+}
+
+function assignedRecordId(source, seqid) {
+  const candidates = candidateRecords(seqid);
+  if (candidates.length === 1) return candidates[0].id;
+  if (candidates.length === 0) return null;
+  const assigned = gffAssignments.get(assignmentKey(source.id, seqid));
+  return candidates.some(record => record.id === assigned) ? assigned : null;
+}
+
+function ambiguousGffMatches() {
+  const matches = [];
+  for (const source of gffSources) {
+    for (const [seqid, features] of source.bySeqid) {
+      const candidates = candidateRecords(seqid);
+      if (candidates.length > 1) {
+        matches.push({
+          key: assignmentKey(source.id, seqid),
+          source,
+          seqid,
+          features,
+          candidates,
+          assigned: assignedRecordId(source, seqid)
+        });
+      }
+    }
+  }
+  return matches;
+}
+
+function rematchGff() {
+  for (const match of ambiguousGffMatches()) {
+    if (match.assigned) continue;
+    const sourceStem = sanitize(stem(match.source.name)).toLowerCase();
+    const sameStem = match.candidates.filter(record => sanitize(stem(record.sourceFile)).toLowerCase() === sourceStem);
+    if (sameStem.length === 1) gffAssignments.set(match.key, sameStem[0].id);
+  }
+}
+
+function featureEntriesForRecord(rec) {
+  const entries = [];
+  for (const source of gffSources) {
+    if (assignedRecordId(source, rec.name) !== rec.id) continue;
+    for (const feature of source.bySeqid.get(rec.name) || []) entries.push({ feature, source, record: rec });
+  }
+  return entries;
+}
+
+function featureCount(rec) { return featureEntriesForRecord(rec).length; }
 
 // Seqids present in GFFs that match no loaded sequence.
 function orphanSeqids() {
   const names = new Set(records.map(r => r.name));
-  return Object.keys(gffBySeqid).filter(sid => !names.has(sid));
+  const seqids = new Set();
+  for (const source of gffSources) for (const seqid of source.bySeqid.keys()) if (!names.has(seqid)) seqids.add(seqid);
+  return [...seqids];
 }
 
 // Snapshot the FileList into an array *before* any await — resetting input.value
 // empties the live FileList, which would otherwise truncate the async load loop.
-document.getElementById('fastaInput').addEventListener('change', e => { const files = [...e.target.files]; e.target.value=''; if (files.length) loadFastaFiles(files); });
-document.getElementById('gffInput').addEventListener('change', e => { const files = [...e.target.files]; e.target.value=''; if (files.length) loadGffFiles(files); });
+document.getElementById('fastaInput').addEventListener('change', e => {
+  const files = [...e.target.files]; e.target.value = '';
+  if (files.length) {
+    const generation = loadGeneration;
+    fastaLoadChain = fastaLoadChain.then(() => loadFastaFiles(files, generation));
+  }
+});
+document.getElementById('gffInput').addEventListener('change', e => {
+  const files = [...e.target.files]; e.target.value = '';
+  if (files.length) {
+    const generation = loadGeneration;
+    gffLoadChain = gffLoadChain.then(() => loadGffFiles(files, generation));
+  }
+});
 
 // Drag & drop highlighting (the hidden file input already accepts drops)
 for (const [boxId] of [['fastaBox'],['gffBox']]) {
@@ -656,18 +866,18 @@ function toggleOutputAll(oid, checked) {
 // ── Export-name resolution ──
 // Returns a map recordId -> final export name, applying auto-disambiguation if enabled.
 function resolveExportNames() {
-  const base = {};
+  const base = Object.create(null);
   for (const r of records) base[r.id] = r.exportName || r.name;
-  const map = {};
+  const map = Object.create(null);
   if (!autoDisambiguate) { for (const r of records) map[r.id] = base[r.id]; return map; }
 
-  const counts = {};
-  for (const r of records) counts[base[r.id]] = (counts[base[r.id]] || 0) + 1;
+  const counts = new Map();
+  for (const r of records) counts.set(base[r.id], (counts.get(base[r.id]) || 0) + 1);
   const used = new Set();
-  for (const r of records) if (counts[base[r.id]] === 1) used.add(base[r.id]);
+  for (const r of records) if (counts.get(base[r.id]) === 1) used.add(base[r.id]);
   for (const r of records) {
     const nm = base[r.id];
-    if (counts[nm] === 1) { map[r.id] = nm; continue; }
+    if (counts.get(nm) === 1) { map[r.id] = nm; continue; }
     let cand = nm + '.' + sanitize(stem(r.sourceFile));
     if (used.has(cand)) { let i = 2; while (used.has(cand + '.' + i)) i++; cand = cand + '.' + i; }
     used.add(cand);
@@ -678,31 +888,116 @@ function resolveExportNames() {
 
 // Per-output: names that collide among that output's members. Returns Map<oid, Set<recordId>>.
 function collisionInfo(nameMap) {
-  const result = {};
+  const result = Object.create(null);
   for (const o of outputs) {
-    const byName = {};
+    const byName = new Map();
     for (const rid of o.members) {
       const nm = nameMap[rid];
-      (byName[nm] = byName[nm] || []).push(rid);
+      if (!byName.has(nm)) byName.set(nm, []);
+      byName.get(nm).push(rid);
     }
     const bad = new Set();
-    for (const nm in byName) if (byName[nm].length > 1) byName[nm].forEach(rid => bad.add(rid));
+    for (const ids of byName.values()) if (ids.length > 1) ids.forEach(rid => bad.add(rid));
     result[o.id] = bad;
   }
   return result;
 }
 
+function unresolvedForOutput(output) {
+  const unresolved = [];
+  for (const match of ambiguousGffMatches()) {
+    if (match.assigned) continue;
+    if (match.candidates.some(record => output.members.has(record.id))) unresolved.push(match);
+  }
+  return unresolved;
+}
+
+function outputFeatureEntries(output) {
+  const entries = [];
+  for (const rid of output.members) {
+    const record = records.find(item => item.id === rid);
+    if (record) entries.push(...featureEntriesForRecord(record));
+  }
+  return entries;
+}
+
+function featureIdConflicts(output) {
+  const groups = new Map();
+  for (const entry of outputFeatureEntries(output)) {
+    const id = entry.feature.attrs.get('ID');
+    if (!id) continue;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(entry);
+  }
+  const conflicts = new Map();
+  for (const [id, entries] of groups) {
+    const signatures = new Set(entries.map(entry => [
+      entry.record.id,
+      entry.source.id,
+      entry.feature.cols[1],
+      entry.feature.cols[2],
+      entry.feature.cols[6]
+    ].join('\t')));
+    if (signatures.size > 1) conflicts.set(id, entries);
+  }
+  return conflicts;
+}
+
+function inputErrors() {
+  const errors = [];
+  for (const source of fastaFileNames) for (const error of source.errors) errors.push(`${source.name}: ${error}`);
+  for (const source of gffSources) for (const error of source.errors) errors.push(`${source.name}: ${error}`);
+  return errors;
+}
+
+function outputBlockers(output, nameMap = resolveExportNames()) {
+  const blockers = [...inputErrors()];
+  const collisions = collisionInfo(nameMap)[output.id] || new Set();
+  if (collisions.size) blockers.push(`${collisions.size} sequence(s) have duplicate final identifiers`);
+  const unresolved = unresolvedForOutput(output);
+  if (unresolved.length) blockers.push(`${unresolved.length} ambiguous GFF-to-FASTA assignment(s) are unresolved`);
+  const idConflicts = featureIdConflicts(output);
+  if (idConflicts.size) blockers.push(`conflicting GFF3 feature ID(s): ${[...idConflicts.keys()].join(', ')}`);
+  return blockers;
+}
+
+function outputWarnings(output) {
+  const warnings = [];
+  const memberRecords = [...output.members].map(rid => records.find(record => record.id === rid)).filter(Boolean);
+  const fastaSourceIds = new Set(memberRecords.map(record => record.sourceId));
+  for (const source of fastaFileNames) {
+    if (fastaSourceIds.has(source.id)) warnings.push(...source.warnings.map(w => `${source.name}: ${w}`));
+  }
+  const contributingGffIds = new Set(memberRecords.flatMap(record => featureEntriesForRecord(record).map(entry => entry.source.id)));
+  for (const source of gffSources) {
+    if (contributingGffIds.has(source.id)) warnings.push(...source.warnings.map(w => `${source.name}: ${w}`));
+  }
+  const members = new Map([...output.members].map(rid => [rid, records.find(record => record.id === rid)]));
+  for (const record of members.values()) {
+    if (!record) continue;
+    for (const { feature, source } of featureEntriesForRecord(record)) {
+      if (feature.end > record.length) {
+        warnings.push(`${source.name} line ${feature.lineNo}: end ${feature.end} exceeds ${record.name} length ${record.length}`);
+      }
+    }
+  }
+  const orphans = orphanSeqids();
+  if (orphans.length) warnings.push(`GFF seqid(s) with no loaded FASTA record will be omitted: ${orphans.join(', ')}`);
+  return [...new Set(warnings)];
+}
+
 // ── Rendering ──
 function rebuild() {
+  renderChips();
+  renderDiagnostics();
+  renderAmbiguities();
   if (records.length === 0) {
     document.getElementById('workspace').style.display = 'none';
     document.getElementById('emptyState').style.display = '';
-    renderChips();
     return;
   }
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('workspace').style.display = '';
-  renderChips();
   renderStats();
   renderTable();
   renderOutputs();
@@ -713,10 +1008,53 @@ function renderChips() {
   for (const f of fastaFileNames) {
     chips.push(`<span class="file-chip fasta">🧬 ${escapeHtml(f.name)} <span class="chip-count">${f.count} seq</span></span>`);
   }
-  for (const f of gffFileNames) {
-    chips.push(`<span class="file-chip gff">📋 ${escapeHtml(f.name)} <span class="chip-count">${f.count} feat</span></span>`);
+  for (const f of gffSources) {
+    chips.push(`<span class="file-chip gff">📋 ${escapeHtml(f.name)} <span class="chip-count">${f.features.length} feat</span></span>`);
   }
   document.getElementById('fileChips').innerHTML = chips.join('');
+}
+
+function renderDiagnostics() {
+  const banner = document.getElementById('warnBanner');
+  const errors = inputErrors();
+  const warnings = [];
+  for (const source of fastaFileNames) warnings.push(...source.warnings.map(w => `${source.name}: ${w}`));
+  for (const source of gffSources) warnings.push(...source.warnings.map(w => `${source.name}: ${w}`));
+  const orphans = orphanSeqids();
+  if (orphans.length) warnings.push(`GFF seqid(s) with no loaded FASTA record will be omitted: ${orphans.join(', ')}`);
+  const messages = [];
+  if (errors.length) messages.push(`Cannot export:\n• ${errors.join('\n• ')}`);
+  if (warnings.length) messages.push(`Warnings:\n• ${[...new Set(warnings)].join('\n• ')}`);
+  banner.textContent = messages.join('\n\n');
+  banner.style.display = messages.length ? 'block' : 'none';
+  banner.classList.toggle('error', errors.length > 0);
+}
+
+function assignGffMatch(key, rid) {
+  if (rid) gffAssignments.set(key, rid); else gffAssignments.delete(key);
+  rebuild();
+}
+
+function renderAmbiguities() {
+  const panel = document.getElementById('ambiguityPanel');
+  const matches = ambiguousGffMatches();
+  if (!matches.length) {
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    return;
+  }
+  const rows = matches.map(match => {
+    const options = [`<option value="">Choose target record…</option>`];
+    for (const record of match.candidates) {
+      options.push(`<option value="${record.id}" ${match.assigned === record.id ? 'selected' : ''}>${escapeHtml(record.sourceFile)} — ${escapeHtml(record.name)} (${record.length.toLocaleString()} bp)</option>`);
+    }
+    return `<div class="ambiguity-row">
+      <span>${escapeHtml(match.source.name)}: <strong>${escapeHtml(match.seqid)}</strong> (${match.features.length} feature${match.features.length === 1 ? '' : 's'}) →</span>
+      <select data-key="${escapeHtml(match.key)}" onchange="assignGffMatch(this.dataset.key, this.value)">${options.join('')}</select>
+    </div>`;
+  });
+  panel.innerHTML = `<strong>Resolve duplicate-seqid annotation targets</strong>${rows.join('')}`;
+  panel.style.display = 'block';
 }
 
 function fmtBp(n) {
@@ -729,7 +1067,6 @@ function fmtBp(n) {
 function renderStats() {
   const totalBp = records.reduce((a, r) => a + r.length, 0);
   const totalFeats = records.reduce((a, r) => a + featureCount(r), 0);
-  const orphans = orphanSeqids();
   let html = `
     <div class="stat"><strong>${records.length}</strong> sequences</div>
     <div class="stat"><strong>${fmtBp(totalBp)}</strong> total</div>
@@ -738,16 +1075,6 @@ function renderStats() {
     <div class="stat purple"><strong>${outputs.length}</strong> output${outputs.length===1?'':'s'}</div>
   `;
   document.getElementById('statsBar').innerHTML = html;
-
-  const banner = document.getElementById('warnBanner');
-  if (orphans.length) {
-    const orphanFeats = orphans.reduce((a, sid) => a + gffBySeqid[sid].length, 0);
-    banner.style.display = '';
-    banner.textContent = `⚠ ${orphanFeats.toLocaleString()} GFF feature(s) reference ${orphans.length} seqid(s) with no matching sequence ` +
-      `(${orphans.slice(0,5).map(s=>s).join(', ')}${orphans.length>5?', …':''}). These are not included in any output.`;
-  } else {
-    banner.style.display = 'none';
-  }
 }
 
 function visibleRecords() {
@@ -774,7 +1101,7 @@ function renderTable() {
   const nameMap = resolveExportNames();
   const collisions = collisionInfo(nameMap);
   const visible = visibleRecords();
-  const maxLen = Math.max(...records.map(r => r.length), 1);
+  const maxLen = maxSequenceLength(records);
 
   const baseCols = [
     { key: 'name', label: 'Sequence', sortable: true },
@@ -858,17 +1185,17 @@ function renderOutputs() {
     const bp = mem.reduce((a, r) => a + r.length, 0);
     const feats = mem.reduce((a, r) => a + featureCount(r), 0);
     const hasGff = feats > 0;
-    const coll = collisions[o.id].size;
+    const blockers = outputBlockers(o, nameMap);
     let warn = '';
     if (mem.length === 0) warn = `<div class="out-warn">empty — no sequences selected</div>`;
-    else if (coll) warn = `<div class="out-warn err">⚠ ${coll} sequence(s) share a name — enable auto-disambiguate or rename them</div>`;
+    else if (blockers.length) warn = `<div class="out-warn err">⚠ ${escapeHtml(blockers.join(' · '))}</div>`;
     return `<div class="out-card">
       <h3>${escapeHtml(o.name)}</h3>
       <div class="out-stats">${mem.length} seq · ${fmtBp(bp)}${hasGff?` · ${feats.toLocaleString()} feat`:''}</div>
       ${warn}
       <div class="out-dl">
-        <button class="mini" ${mem.length?'':'disabled'} onclick="downloadOutput('${o.id}','fasta')">⬇ FASTA</button>
-        <button class="mini" ${hasGff?'':'disabled'} onclick="downloadOutput('${o.id}','gff')">⬇ GFF</button>
+        <button class="mini" ${(mem.length && !blockers.length)?'':'disabled'} onclick="downloadOutput('${o.id}','fasta')">⬇ FASTA</button>
+        <button class="mini" ${(hasGff && !blockers.length)?'':'disabled'} onclick="downloadOutput('${o.id}','gff')">⬇ GFF</button>
       </div>
     </div>`;
   });
@@ -882,11 +1209,11 @@ function renderOutputs() {
     return a + 1 + (feats > 0 ? 1 : 0);
   }, 0);
   const nonEmpty = outputs.filter(o => o.members.size > 0).length;
-  const anyCollision = outputs.some(o => collisions[o.id].size > 0);
+  const blockedOutputs = outputs.filter(o => o.members.size > 0 && outputBlockers(o, nameMap).length > 0);
   document.getElementById('exportInfo').innerHTML =
     `<strong>${nonEmpty}</strong> non-empty output${nonEmpty===1?'':'s'} → <strong>${totalFiles}</strong> file${totalFiles===1?'':'s'} in the zip` +
-    (anyCollision ? ` · <span style="color:var(--red)">resolve name collisions first</span>` : '');
-  document.getElementById('exportBtn').disabled = (nonEmpty === 0 || anyCollision);
+    (blockedOutputs.length ? ` · <span style="color:var(--red)">resolve ${blockedOutputs.length} blocked output${blockedOutputs.length === 1 ? '' : 's'} first</span>` : '');
+  document.getElementById('exportBtn').disabled = (nonEmpty === 0 || blockedOutputs.length > 0);
 }
 
 // Members of an output in current table sort order, returning record objects.
@@ -947,8 +1274,9 @@ function resetRename(rid) {
 
 function resetAll() {
   if (!confirm('Clear all loaded files and outputs?')) return;
-  records = []; outputs = []; gffBySeqid = {}; gffFileNames = []; fastaFileNames = [];
-  recordSeq = 0; outputSeq = 0;
+  loadGeneration++;
+  records = []; outputs = []; gffSources = []; gffAssignments = new Map(); fastaFileNames = [];
+  recordSeq = 0; outputSeq = 0; fastaSourceSeq = 0; gffSourceSeq = 0;
   document.getElementById('fastaBox').classList.remove('loaded');
   document.getElementById('gffBox').classList.remove('loaded');
   document.getElementById('searchBox').value = '';
@@ -970,15 +1298,21 @@ function buildFasta(o, nameMap) {
 function buildGff(o, nameMap) {
   const mem = orderedMembers(o, nameMap);
   const lines = ['##gff-version 3'];
-  // regenerated sequence-region directives from actual lengths
+  const entriesByRecord = new Map();
+  const directives = new Set();
   for (const r of mem) {
-    if (featureCount(r) > 0) lines.push(`##sequence-region ${nameMap[r.id]} 1 ${r.length}`);
+    const entries = featureEntriesForRecord(r);
+    entriesByRecord.set(r.id, entries);
+    for (const { source } of entries) for (const directive of source.directives) directives.add(directive);
+  }
+  lines.push(...directives);
+  for (const r of mem) {
+    if ((entriesByRecord.get(r.id) || []).length) lines.push(`##sequence-region ${nameMap[r.id]} 1 ${r.length}`);
   }
   for (const r of mem) {
-    const feats = gffBySeqid[r.name] || [];
     const nm = nameMap[r.id];
-    for (const f of feats) {
-      const cols = f.cols.slice();
+    for (const { feature } of entriesByRecord.get(r.id) || []) {
+      const cols = feature.cols.slice();
       cols[0] = nm; // rewrite seqid to match the FASTA header
       lines.push(cols.join('\t'));
     }
@@ -988,7 +1322,15 @@ function buildGff(o, nameMap) {
 
 function downloadOutput(oid, kind) {
   const o = outputs.find(x => x.id === oid);
+  if (!o) return;
   const nameMap = resolveExportNames();
+  const blockers = outputBlockers(o, nameMap);
+  if (blockers.length) {
+    alert(`Cannot export ${o.name}:\n\n• ${blockers.join('\n• ')}`);
+    return;
+  }
+  const warnings = outputWarnings(o);
+  if (warnings.length && !confirm(`Please review warnings for ${o.name}:\n\n• ${warnings.join('\n• ')}\n\nContinue?`)) return;
   if (kind === 'fasta') downloadBlob(buildFasta(o, nameMap), o.name + '.fasta');
   else downloadBlob(buildGff(o, nameMap), o.name + '.gff');
 }
@@ -1000,18 +1342,42 @@ function downloadBlob(content, filename) {
 
 function downloadAllZip() {
   const nameMap = resolveExportNames();
+  const nonEmpty = outputs.filter(o => o.members.size > 0);
+  const blocked = nonEmpty.map(o => ({ o, blockers: outputBlockers(o, nameMap) })).filter(x => x.blockers.length);
+  if (blocked.length) {
+    alert(`Cannot export:\n\n${blocked.map(x => `${x.o.name}: ${x.blockers.join('; ')}`).join('\n')}`);
+    return;
+  }
+  const warnings = [...new Set(nonEmpty.flatMap(outputWarnings))];
+  if (warnings.length && !confirm(`Please review these warnings:\n\n• ${warnings.join('\n• ')}\n\nContinue with ZIP export?`)) return;
+
   const files = [];
-  const usedNames = {};
-  for (const o of outputs) {
-    if (o.members.size === 0) continue;
+  const usedBases = new Set();
+  let totalBytes = 0;
+  for (const o of nonEmpty) {
     let base = o.name;
-    // guard against two outputs sharing a name inside the zip
-    if (usedNames[base]) { base = base + '.' + (++usedNames[o.name]); } else usedNames[base] = 1;
-    files.push({ name: base + '.fasta', data: new TextEncoder().encode(buildFasta(o, nameMap)) });
+    let suffix = 2;
+    while (usedBases.has(base)) base = `${o.name}.${suffix++}`;
+    usedBases.add(base);
+    const fastaData = new TextEncoder().encode(buildFasta(o, nameMap));
+    totalBytes += fastaData.length;
+    files.push({ name: base + '.fasta', data: fastaData });
     const feats = [...o.members].reduce((a, rid) => { const r = records.find(x=>x.id===rid); return a + (r?featureCount(r):0); }, 0);
-    if (feats > 0) files.push({ name: base + '.gff', data: new TextEncoder().encode(buildGff(o, nameMap)) });
+    if (feats > 0) {
+      const gffData = new TextEncoder().encode(buildGff(o, nameMap));
+      totalBytes += gffData.length;
+      files.push({ name: base + '.gff', data: gffData });
+    }
+    if (totalBytes > MAX_ZIP_BYTES) {
+      alert(`ZIP export exceeds the ${Math.round(MAX_ZIP_BYTES / 1024 / 1024)} MiB in-memory safety limit. Download outputs individually.`);
+      return;
+    }
   }
   if (!files.length) { alert('No non-empty outputs to export.'); return; }
+  if (files.length > 65535) {
+    alert('ZIP export exceeds the classic ZIP limit of 65,535 entries. Reduce the number of outputs.');
+    return;
+  }
   const blob = makeZip(files);
   triggerDownload(blob, 'combined_genomes.zip');
 }

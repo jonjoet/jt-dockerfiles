@@ -1,130 +1,214 @@
 import fs from 'fs';
 
-const html = fs.readFileSync('fasta_gff_combiner.html', 'utf8');
+const NativeURL = URL;
+const html = fs.readFileSync(new URL('../fasta_gff_combiner.html', import.meta.url), 'utf8');
 const script = html.split('<script>')[1].split('</script>')[0];
 
-// ── minimal DOM stub ──
 const store = {};
 function fakeEl() {
-  return new Proxy({
-    _value: '', classList: { add(){}, remove(){} },
-    addEventListener(){}, style: {}, innerHTML: '', textContent: '',
-    querySelector(){ return null; }, focus(){}, select(){}, dataset:{},
-    get value(){ return this._value; }, set value(v){ this._value = v; },
-  }, {});
+  return {
+    listeners: {},
+    classList: { add(){}, remove(){}, toggle(){} },
+    addEventListener(type, fn){ this.listeners[type] = fn; },
+    style: {},
+    innerHTML: '',
+    textContent: '',
+    value: '',
+    checked: false,
+    disabled: false,
+    dataset: {},
+    querySelector(){ return null; },
+    focus(){},
+    select(){},
+  };
 }
 for (const id of ['fastaInput','gffInput','fastaBox','gffBox','fileChips','workspace',
-  'emptyState','warnBanner','statsBar','searchBox','autoDisambig','tableHead',
-  'tableBody','outputsSummary','exportInfo','exportBtn']) store[id] = fakeEl();
+  'emptyState','warnBanner','ambiguityPanel','statsBar','searchBox','autoDisambig',
+  'tableHead','tableBody','outputsSummary','exportInfo','exportBtn']) store[id] = fakeEl();
 
+let alerts = [];
+let confirms = [];
 globalThis.document = {
-  getElementById: id => store[id] || (store[id]=fakeEl()),
-  createElement: () => ({ click(){}, style:{} }),
+  getElementById: id => store[id] || (store[id] = fakeEl()),
+  createElement: () => ({ click(){}, style: {} }),
   body: { appendChild(){}, removeChild(){} },
 };
-globalThis.alert = m => console.log('ALERT:', m);
-globalThis.confirm = () => true;
+globalThis.alert = message => alerts.push(message);
+globalThis.confirm = message => { confirms.push(message); return true; };
 globalThis.URL = { createObjectURL: () => 'blob:', revokeObjectURL(){} };
 
-// expose all top-level fns/vars: eval in module scope then grab via regex-free approach
-const exported = eval(script + '\n;({parseFasta,parseGff,resolveExportNames,collisionInfo,buildFasta,buildGff,crc32,makeZip,addOutput,toggleMember,get records(){return records},get outputs(){return outputs},set autoDisambiguate(v){autoDisambiguate=v}, get autoDisambiguate(){return autoDisambiguate}, rematchGff, rebuild, gffPush(t){const f=parseGff(t);for(const x of f){const s=x.cols[0];(gffBySeqid[s]=gffBySeqid[s]||[]).push(x);} }, orphanSeqids });');
+const T = eval(script + `
+;({
+  parseFasta, parseFastaDetailed, parseGff, parseGffDetailed, parseAttributes,
+  loadFastaFiles, loadGffFiles, resolveExportNames, collisionInfo, buildFasta,
+  buildGff, crc32, makeZip, addOutput, toggleMember, featureCount,
+  featureEntriesForRecord, ambiguousGffMatches, assignGffMatch, orphanSeqids,
+  outputBlockers, outputWarnings, featureIdConflicts, maxSequenceLength,
+  downloadOutput, downloadAllZip,
+  get records(){ return records; },
+  get outputs(){ return outputs; },
+  get gffSources(){ return gffSources; },
+  get maxZipBytes(){ return MAX_ZIP_BYTES; },
+  set autoDisambiguate(v){ autoDisambiguate = v; },
+  resetState(){
+    loadGeneration++;
+    records = []; outputs = []; gffSources = []; gffAssignments = new Map();
+    fastaFileNames = []; recordSeq = 0; outputSeq = 0; fastaSourceSeq = 0; gffSourceSeq = 0;
+    sortCol = 'length'; sortDir = -1; autoDisambiguate = false;
+    loadGeneration = 0; fastaLoadChain = Promise.resolve(); gffLoadChain = Promise.resolve();
+  },
+  setDownloadCapture(fn){ triggerDownload = fn; },
+  setZipCapture(fn){ makeZip = fn; triggerDownload = () => {}; },
+});`);
 
-const T = exported;
-let pass=0, fail=0;
-function check(name, cond, extra='') { if(cond){pass++;console.log('  ✓',name);} else {fail++;console.log('  ✗ FAIL',name,extra);} }
+let pass = 0;
+let fail = 0;
+function check(name, condition, extra = '') {
+  if (condition) {
+    pass++;
+    console.log('  ✓', name);
+  } else {
+    fail++;
+    console.log('  ✗ FAIL', name, extra);
+  }
+}
+const file = (name, text) => ({ name, text: async () => text });
+const headers = text => (text.match(/^>/gm) || []).length;
+const featureLines = text => text.split('\n').filter(line => line && !line.startsWith('#'));
 
-// ── Load fixtures the way the app does ──
-const chrom = fs.readFileSync('test/chromosome.fasta','utf8');
-const plas  = fs.readFileSync('test/plasmids.fasta','utf8');
-const coll  = fs.readFileSync('test/contig_collide.fasta','utf8');
-const gff   = fs.readFileSync('test/anno.gff3','utf8');
+console.log('\n[input validation]');
+let parsedFa = T.parseFastaDetailed('\uFEFF>a\rAC GT\r>b\rNN', 'x.fa', 'f1');
+check('BOM and CR-only FASTA preserve records', parsedFa.records.length === 2);
+check('sequence whitespace is normalized and reported', parsedFa.records[0].sequence === 'ACGT' && parsedFa.warnings.some(w => w.includes('line 2')));
+check('empty FASTA identifier is rejected', T.parseFastaDetailed('>\nAC').errors.some(e => e.includes('identifier')));
+let parsedGff = T.parseGffDetailed('a\ts\tgene\t1\t2\t.\t+\t.\tgene_id "x";');
+check('GTF content is rejected', parsedGff.errors.some(e => e.includes('GTF')));
+parsedGff = T.parseGffDetailed('a\ts\tgene\t1\t2\t.\t+\t.\tgene_id "A=B";');
+check('inconclusive GTF-like attributes warn', parsedGff.errors.length === 0 && parsedGff.warnings.length === 1);
+parsedGff = T.parseGffDetailed('a\ts\tgene\t1\t2\t.\t+\t.\tNote="quoted";ID=x');
+check('ordinary quoted GFF3 attribute is accepted', parsedGff.errors.length === 0 && parsedGff.warnings.length === 0);
+parsedGff = T.parseGffDetailed('a\ts\tgene\t1\t2\t.\t+\t.\tID=x;Note=has "quoted" text');
+check('quoted phrase inside GFF3 free text is silent', parsedGff.errors.length === 0 && parsedGff.warnings.length === 0, parsedGff.warnings);
+check('malformed GFF row is rejected with line number', T.parseGffDetailed('a\tbad').errors[0].startsWith('line 1:'));
+check('invalid phase is rejected', T.parseGffDetailed('a\ts\tCDS\t1\t2\t.\t+\t9\tID=x').errors.some(e => e.includes('phase')));
 
-const recs = [];
-recs.push(...T.parseFasta(chrom,'chromosome.fasta'));
-recs.push(...T.parseFasta(plas,'plasmids.fasta'));
-recs.push(...T.parseFasta(coll,'contig_collide.fasta'));
-T.records.push(...recs);
-T.gffPush(gff);
-
-console.log('\n[parse]');
-check('4 records parsed', T.records.length===4, T.records.length);
-const chr1 = T.records.find(r=>r.name==='chr1' && r.sourceFile==='chromosome.fasta');
-check('chr1 length 120', chr1.length===120, chr1.length);
-check('chr1 desc preserved', chr1.desc==='main chromosome');
-const pA = T.records.find(r=>r.name==='pA');
-check('pA length 60', pA.length===60, pA.length);
-
-console.log('\n[gff match / orphans]');
-check('orphan seqid detected', T.orphanSeqids().includes('ghost_seq'));
-// (chr1 features verified in build-GFF section below)
-
-console.log('\n[outputs + collision]');
-T.addOutput(); // genome_1
-const o1 = T.outputs[0];
-// put chr1(chromosome) + both plasmids in o1
-T.toggleMember(o1.id, chr1.id, true);
-T.toggleMember(o1.id, pA.id, true);
-T.toggleMember(o1.id, T.records.find(r=>r.name==='pB').id, true);
-let nm = T.resolveExportNames();
-let coll1 = T.collisionInfo(nm);
-check('o1 no collision (distinct names)', coll1[o1.id].size===0);
-
-// second output: chr1 from BOTH source files -> collision
-T.addOutput();
-const o2 = T.outputs[1];
-const chr1b = T.records.find(r=>r.name==='chr1' && r.sourceFile==='contig_collide.fasta');
-T.toggleMember(o2.id, chr1.id, true);
-T.toggleMember(o2.id, chr1b.id, true);
-nm = T.resolveExportNames();
-coll1 = T.collisionInfo(nm);
-check('o2 collision detected (2 chr1)', coll1[o2.id].size===2, coll1[o2.id].size);
-
-// enable auto-disambiguate
+console.log('\n[source-aware annotation matching]');
+T.resetState();
+await T.loadFastaFiles([
+  file('a.fasta', '>chr1\nAAAA'),
+  file('b.fasta', '>chr1\nCC'),
+]);
+await T.loadGffFiles([file('annotations.gff3', 'chr1\ts\tgene\t1\t4\t.\t+\t.\tID=g1')]);
+let ambiguity = T.ambiguousGffMatches()[0];
+check('duplicate seqid creates one explicit ambiguity', ambiguity && ambiguity.candidates.length === 2);
+const out = T.outputs[0];
+for (const record of T.records) T.toggleMember(out.id, record.id, true);
+check('unresolved annotation assignment blocks affected output', T.outputBlockers(out).some(x => x.includes('ambiguous')));
+const aRecord = T.records.find(record => record.sourceFile === 'a.fasta');
+const bRecord = T.records.find(record => record.sourceFile === 'b.fasta');
+T.assignGffMatch(ambiguity.key, aRecord.id);
+check('resolved feature attaches to chosen record only', T.featureCount(aRecord) === 1 && T.featureCount(bRecord) === 0);
 T.autoDisambiguate = true;
-nm = T.resolveExportNames();
-coll1 = T.collisionInfo(nm);
-check('auto-disambiguate clears collision', coll1[o2.id].size===0);
-check('disambig names differ', nm[chr1.id]!==nm[chr1b.id], nm[chr1.id]+' / '+nm[chr1b.id]);
-check('disambig uses source stem', nm[chr1b.id].includes('contig_collide'), nm[chr1b.id]);
+let names = T.resolveExportNames();
+let builtGff = T.buildGff(out, names);
+check('one input feature emits exactly once', featureLines(builtGff).length === 1, builtGff);
+check('chosen feature seqid follows chosen record export name', featureLines(builtGff)[0].startsWith(names[aRecord.id] + '\t'));
+check('feature is not copied out of bounds to second record', !builtGff.includes(names[bRecord.id] + '\ts\tgene'));
+
+console.log('\n[name collision safety]');
 T.autoDisambiguate = false;
-
-console.log('\n[build FASTA]');
-nm = T.resolveExportNames();
-const fa1 = T.buildFasta(o1, nm);
-check('o1 FASTA has 3 headers', (fa1.match(/^>/gm)||[]).length===3, (fa1.match(/^>/gm)||[]).length);
-check('o1 FASTA wraps at 80', fa1.split('\n').every(l=>l.startsWith('>')||l.length<=80));
-check('o1 FASTA header keeps desc', fa1.includes('>chr1 main chromosome'));
-
-console.log('\n[build GFF + seqid rewrite]');
-const gff1 = T.buildGff(o1, nm);
-check('GFF starts with ##gff-version 3', gff1.startsWith('##gff-version 3'));
-check('GFF has regenerated sequence-region chr1 1 120', gff1.includes('##sequence-region chr1 1 120'));
-check('GFF has sequence-region pA 1 60', gff1.includes('##sequence-region pA 1 60'));
-const featLines = gff1.split('\n').filter(l=>l && !l.startsWith('#'));
-check('GFF carries 3 matched features (2 chr1 +1 pA)', featLines.length===3, featLines.length);
-check('GFF excludes orphan ghost_seq', !gff1.includes('ghost_seq'));
-check('GFF pB has no features (not in output dirs)', !gff1.includes('\tpB\t'));
-
-// GFF with renamed seqid
+check('duplicate final names block output', T.outputBlockers(out).some(x => x.includes('duplicate final')));
+alerts = [];
+let downloadCount = 0;
+T.setDownloadCapture(() => { downloadCount++; });
+T.downloadOutput(out.id, 'fasta');
+check('individual download guard prevents collision bypass', downloadCount === 0 && alerts.length === 1);
 T.autoDisambiguate = true;
-nm = T.resolveExportNames();
-const gff2 = T.buildGff(o2, nm);
-const o2feat = gff2.split('\n').filter(l=>l && !l.startsWith('#'));
-check('o2 GFF feature seqid rewritten to disambiguated name',
-   o2feat.some(l=>l.split('\t')[0]===nm[chr1.id]) && o2feat.some(l=>l.split('\t')[0]===nm[chr1b.id]),
-   o2feat.map(l=>l.split('\t')[0]).join(','));
-T.autoDisambiguate = false;
+check('auto-disambiguation clears final-name block', !T.outputBlockers(out).some(x => x.includes('duplicate final')));
 
-console.log('\n[zip]');
-// CRC32 known value: crc32("123456789") = 0xCBF43926
-const crc = T.crc32(new TextEncoder().encode('123456789'));
-check('crc32("123456789")==0xCBF43926', crc===0xCBF43926, crc.toString(16));
-const blob = T.makeZip([{name:'a.txt', data:new TextEncoder().encode('hello')}]);
-check('makeZip returns a Blob', blob && typeof blob.size==='number' && blob.size>0, blob && blob.size);
-// verify zip signature
+console.log('\n[GFF feature ID integrity]');
+T.resetState();
+await T.loadFastaFiles([
+  file('chrom.fasta', '>chr1\nAAAAAAAAAA'),
+  file('plasmid.fasta', '>p1\nCCCCCCCCCC'),
+]);
+await T.loadGffFiles([
+  file('chrom.gff3', 'chr1\ttool\tgene\t1\t2\t.\t+\t.\tID=gene1'),
+  file('plasmid.gff3', 'p1\ttool\tgene\t1\t2\t.\t+\t.\tID=gene1'),
+]);
+const conflictOut = T.outputs[0];
+for (const record of T.records) T.toggleMember(conflictOut.id, record.id, true);
+check('same feature ID from different GFF sources blocks output', T.featureIdConflicts(conflictOut).has('gene1'));
+check('feature-ID conflict appears in export blockers', T.outputBlockers(conflictOut).some(x => x.includes('feature ID')));
+
+T.resetState();
+await T.loadFastaFiles([file('one.fasta', '>chr1\nAAAAAAAAAA')]);
+await T.loadGffFiles([file('one.gff3', [
+  '##species https://example.test/species',
+  'chr1\ttool\tCDS\t1\t2\t.\t+\t0\tID=cds1',
+  'chr1\ttool\tCDS\t5\t6\t.\t+\t2\tID=cds1',
+].join('\n'))]);
+const discontinuousOut = T.outputs[0];
+T.toggleMember(discontinuousOut.id, T.records[0].id, true);
+check('legitimate discontinuous feature ID is silent', T.featureIdConflicts(discontinuousOut).size === 0 && T.outputBlockers(discontinuousOut).length === 0);
+builtGff = T.buildGff(discontinuousOut, T.resolveExportNames());
+check('supported global directive is preserved', builtGff.split('\n')[1] === '##species https://example.test/species');
+check('both discontinuous rows are conserved', featureLines(builtGff).length === 2);
+
+console.log('\n[orphans, bounds, prototypes]');
+T.resetState();
+await T.loadFastaFiles([file('x.fasta', '>__proto__\nAAAA')]);
+await T.loadGffFiles([file('x.gff3', [
+  '__proto__\ts\tgene\t1\t9\t.\t+\t.\tID=x',
+  'ghost\ts\tgene\t1\t2\t.\t+\t.\tID=y',
+].join('\n'))]);
+const protoOut = T.outputs[0];
+T.toggleMember(protoOut.id, T.records[0].id, true);
+check('prototype-key seqid does not crash maps', T.featureCount(T.records[0]) === 1);
+check('orphan seqid is reported', T.orphanSeqids().includes('ghost'));
+check('out-of-bounds feature warns rather than blocks',
+  T.outputWarnings(protoOut).some(x => x.includes('exceeds')) && !T.outputBlockers(protoOut).some(x => x.includes('exceeds')));
+
+console.log('\n[ZIP + scale]');
+T.resetState();
+await T.loadFastaFiles([file('x.fasta', '>x\nAAAA')]);
+for (const name of ['foo', 'foo', 'foo.2', 'constructor']) {
+  T.addOutput();
+  const current = T.outputs.at(-1);
+  current.name = name;
+  T.toggleMember(current.id, T.records[0].id, true);
+}
+// addOutput from the first FASTA load made an unused empty output; it is intentionally ignored.
+let zipNames = [];
+T.setZipCapture(files => { zipNames = files.map(item => item.name); return new Blob([]); });
+T.downloadAllZip();
+check('ZIP entry names are unique for foo/foo/foo.2', new Set(zipNames).size === zipNames.length, zipNames);
+check('prototype-like output name remains stable', zipNames.includes('constructor.fasta'), zipNames);
+check('ZIP safety ceiling is named and finite', Number.isFinite(T.maxZipBytes) && T.maxZipBytes > 0);
+const many = Array.from({ length: 150000 }, (_, i) => ({ length: i === 149999 ? 7 : 1 }));
+check('large record count max does not use spread', T.maxSequenceLength(many) === 7);
+
+console.log('\n[original fixture smoke]');
+T.resetState();
+const chrom = fs.readFileSync(new NativeURL('chromosome.fasta', import.meta.url), 'utf8');
+const plas = fs.readFileSync(new NativeURL('plasmids.fasta', import.meta.url), 'utf8');
+const gff = fs.readFileSync(new NativeURL('anno.gff3', import.meta.url), 'utf8');
+await T.loadFastaFiles([file('chromosome.fasta', chrom), file('plasmids.fasta', plas)]);
+await T.loadGffFiles([file('anno.gff3', gff)]);
+const smokeOut = T.outputs[0];
+for (const record of T.records) T.toggleMember(smokeOut.id, record.id, true);
+names = T.resolveExportNames();
+const fastaOut = T.buildFasta(smokeOut, names);
+builtGff = T.buildGff(smokeOut, names);
+check('fixture FASTA keeps all three records', headers(fastaOut) === 3);
+check('fixture GFF conserves three matched features', featureLines(builtGff).length === 3);
+check('fixture orphan is omitted', !builtGff.includes('ghost_seq'));
+const blob = T.makeZip([{ name: 'a.txt', data: new TextEncoder().encode('hello') }]);
 const buf = Buffer.from(await blob.arrayBuffer());
-check('zip starts with PK\\x03\\x04', buf[0]===0x50&&buf[1]===0x4b&&buf[2]===0x03&&buf[3]===0x04);
-check('zip ends with EOCD PK\\x05\\x06', buf.includes(Buffer.from([0x50,0x4b,0x05,0x06])));
+check('ZIP writer emits local and EOCD signatures',
+  buf.subarray(0, 4).equals(Buffer.from([0x50,0x4b,0x03,0x04])) &&
+  buf.includes(Buffer.from([0x50,0x4b,0x05,0x06])));
+check('crc32 known vector remains correct', T.crc32(new TextEncoder().encode('123456789')) === 0xCBF43926);
 
 console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail?1:0);
+process.exit(fail ? 1 : 0);

@@ -9,7 +9,8 @@ Typical use case: you have a bacterial chromosome in one FASTA and a handful of 
 Concatenating FASTAs by hand breaks the moment two sequences share a name, and stitching GFFs together leaves seqids and `##sequence-region` directives out of sync with the new files. This tool handles the parts that plain concatenation can't:
 
 - **Name-collision handling** — if two different sequences would share a name within the same output (an invalid FASTA/GFF), it's flagged per-output. Toggle **auto-disambiguate** (appends the source-file stem, plus a counter if needed) or rename sequences inline.
-- **GFF seqid sync** — annotations are matched to sequences by seqid; when a sequence is renamed, its features' seqid column is rewritten to match the FASTA header.
+- **Source-aware GFF matching** — unique seqids match automatically. If a seqid occurs in more than one FASTA record, the page asks which exact record a GFF file annotates instead of copying annotations onto every duplicate.
+- **GFF seqid sync** — when a sequence is renamed, its matched features' seqid column is rewritten to match the FASTA header.
 - **Regenerated directives** — each output GFF gets a clean `##gff-version 3` plus freshly computed `##sequence-region` lines (from the actual sequence lengths), instead of stale concatenated headers.
 
 ## Features
@@ -21,6 +22,8 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
   - per-output "select all (visible)", live sequence/bp/feature counts, and collision warnings
 - Sequences export in the table's current sort order (sort by length to put the chromosome first)
 - Inline sequence renaming + global auto-disambiguation
+- Line-numbered FASTA/GFF3 validation; GTF input is rejected because it is not silently convertible to GFF3
+- Output-level checks for ambiguous annotation assignments and conflicting GFF3 feature IDs
 - Orphan-feature warning for GFF seqids that match no loaded sequence (these are excluded)
 - One-click **Download all (.zip)** (a dependency-free, store-only ZIP writer keeps it a single portable file), plus per-output FASTA/GFF download buttons
 - Runs entirely in the browser — no data leaves your machine
