@@ -4,29 +4,23 @@ A standalone HTML tool for trimming junk contigs/scaffolds from genome assemblie
 
 Typical use case: you have a yeast assembly with 16 chromosomes + mitochondrial DNA, plus several short assembly artifacts. This tool lets you visually identify and remove the junk.
 
-## Variants
-
-| File | Description |
-|---|---|
-| `assembly_filter.html` | Base version — upload FASTA + optional GFF, filter by checkbox, export |
-| `assembly_filter_with_reference.html` | Adds a reference FASTA panel for side-by-side comparison (reference sequences are shown but never included in the export) |
-| `assembly_filter_with_rename.html` | Adds the ability to rename contigs/scaffolds during export |
-
 ## Features
 
 - Sorts contigs/scaffolds by length (or name) with N50 stats
 - Select/deselect individual sequences, filter by minimum length, or invert selection
+- Displays an optional reference FASTA for ranked side-by-side comparison
+- Renames contigs/scaffolds while keeping exported GFF seqids synchronized
 - Corresponding GFF lines are automatically removed for deselected sequences
+- Validates FASTA/GFF input and reports normalization or compatibility warnings
 - Exports `*.filtered.fasta` and `*.filtered.gff`
 - Runs entirely client-side in the browser
 
 ## Usage
 
-Open any of the `.html` files directly in a browser (or serve via `python3 -m http.server`). No build step needed.
+Open `assembly_filter_with_rename.html` directly in a browser (or serve via `python3 -m http.server`). Load the assembly FASTA, then optionally load its GFF annotations and a display-only reference FASTA. No build step is needed.
 
 ## Files
 
-- `assembly_filter.html` — base tool.
-- `assembly_filter_with_reference.html` — variant with reference comparison.
-- `assembly_filter_with_rename.html` — variant with contig renaming.
+- `assembly_filter_with_rename.html` — assembly filtering, reference comparison, and contig renaming.
+- `test/harness.mjs` — DOM-free regression tests against the page's actual JavaScript.
 - `README.md` — this file.
