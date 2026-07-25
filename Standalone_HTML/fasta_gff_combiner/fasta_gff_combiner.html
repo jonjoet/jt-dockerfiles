@@ -634,6 +634,7 @@ function parseGffDetailed(text) {
   const lines = splitLines(text);
   const features = [];
   const directives = [];
+  const regions = [];
   const errors = [];
   const warnings = [];
   let inFasta = false;
@@ -642,6 +643,17 @@ function parseGffDetailed(text) {
     const lineNo = i + 1;
     if (inFasta) continue;
     if (raw.trim() === '##FASTA') { inFasta = true; continue; }
+    if (raw.startsWith('##sequence-region')) {
+      const match = raw.match(/^##sequence-region\s+(\S+)\s+(\d+)\s+(\d+)\s*$/);
+      if (!match) {
+        errors.push(`line ${lineNo}: malformed ##sequence-region directive`);
+      } else {
+        const start = Number(match[2]), end = Number(match[3]);
+        if (start < 1 || end < start) errors.push(`line ${lineNo}: invalid ##sequence-region coordinates`);
+        else regions.push({ seqid: match[1], start, end, lineNo });
+      }
+      continue;
+    }
     if (raw.startsWith('##')) {
       if (!raw.startsWith('##gff-version') && !raw.startsWith('##sequence-region') && raw !== '###') {
         directives.push(raw);
@@ -688,7 +700,7 @@ function parseGffDetailed(text) {
     }
     features.push({ cols, raw, lineNo, start, end, attrs: parseAttributes(cols[8]) });
   }
-  return { features, directives: [...new Set(directives)], errors, warnings };
+  return { features, directives: [...new Set(directives)], regions, errors, warnings };
 }
 
 function parseGff(text) {
@@ -725,6 +737,7 @@ async function loadGffFiles(fileList, generation = loadGeneration) {
       name: file.name,
       features: parsed.features,
       directives: parsed.directives,
+      regions: parsed.regions,
       errors: parsed.errors,
       warnings: parsed.warnings,
       bySeqid: new Map()
@@ -971,6 +984,15 @@ function outputWarnings(output) {
   const contributingGffIds = new Set(memberRecords.flatMap(record => featureEntriesForRecord(record).map(entry => entry.source.id)));
   for (const source of gffSources) {
     if (contributingGffIds.has(source.id)) warnings.push(...source.warnings.map(w => `${source.name}: ${w}`));
+    if (!contributingGffIds.has(source.id)) continue;
+    for (const region of source.regions) {
+      const rid = assignedRecordId(source, region.seqid);
+      if (!rid || !output.members.has(rid)) continue;
+      const record = records.find(item => item.id === rid);
+      if (record && (region.start !== 1 || region.end !== record.length)) {
+        warnings.push(`${source.name} line ${region.lineNo}: declared sequence-region ${region.seqid} ${region.start}..${region.end} will be regenerated as 1..${record.length}`);
+      }
+    }
   }
   const members = new Map([...output.members].map(rid => [rid, records.find(record => record.id === rid)]));
   for (const record of members.values()) {

@@ -145,6 +145,7 @@ T.resetState();
 await T.loadFastaFiles([file('one.fasta', '>chr1\nAAAAAAAAAA')]);
 await T.loadGffFiles([file('one.gff3', [
   '##species https://example.test/species',
+  '##sequence-region chr1 2 8',
   'chr1\ttool\tCDS\t1\t2\t.\t+\t0\tID=cds1',
   'chr1\ttool\tCDS\t5\t6\t.\t+\t2\tID=cds1',
 ].join('\n'))]);
@@ -154,6 +155,9 @@ check('legitimate discontinuous feature ID is silent', T.featureIdConflicts(disc
 builtGff = T.buildGff(discontinuousOut, T.resolveExportNames());
 check('supported global directive is preserved', builtGff.split('\n')[1] === '##species https://example.test/species');
 check('both discontinuous rows are conserved', featureLines(builtGff).length === 2);
+check('source sequence-region replacement is disclosed and output is full-length',
+  T.outputWarnings(discontinuousOut).some(w => w.includes('will be regenerated as 1..10')) &&
+  builtGff.includes('##sequence-region chr1 1 10'));
 
 console.log('\n[orphans, bounds, prototypes]');
 T.resetState();

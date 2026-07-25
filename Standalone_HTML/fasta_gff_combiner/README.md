@@ -11,7 +11,7 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
 - **Name-collision handling** — if two different sequences would share a name within the same output (an invalid FASTA/GFF), it's flagged per-output. Toggle **auto-disambiguate** (appends the source-file stem, plus a counter if needed) or rename sequences inline.
 - **Source-aware GFF matching** — unique seqids match automatically. If a seqid occurs in more than one FASTA record, the page asks which exact record a GFF file annotates instead of copying annotations onto every duplicate.
 - **GFF seqid sync** — when a sequence is renamed, its matched features' seqid column is rewritten to match the FASTA header.
-- **Regenerated directives** — each output GFF gets a clean `##gff-version 3` plus freshly computed `##sequence-region` lines (from the actual sequence lengths), instead of stale concatenated headers.
+- **Regenerated directives** — each output GFF gets a clean `##gff-version 3` plus full-length `##sequence-region` lines computed from the exported FASTA. Source subranges are not preserved; the page warns before replacing a non-full-length declaration.
 
 ## Features
 
