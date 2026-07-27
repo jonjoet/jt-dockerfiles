@@ -1,6 +1,8 @@
 # Implementation plan: unzip deliverables, writing to the SMB share only once
 
-> Design doc for a future implementation session. Nothing here is built yet.
+> Implemented on this branch. The downloader, migration script, tests, and
+> `SETUP.md` are the source of truth where they differ from this original design
+> sketch.
 
 ## Context
 
@@ -69,10 +71,10 @@ If pipelines expect a flat layout, this is a one-line change (extract into
      the first chunk. If `Content-Length` is absent (`0`/unknown), fall back to
      requiring a configurable floor of free space (e.g. `PLASMIDSAURUS_MIN_FREE`,
      default a few hundred MB) rather than skipping the check entirely.
-   - **Before extraction**, optionally against the SMB share using the sum of
+   - **Before extraction**, against the SMB share using the sum of
      member `file_size`s from the zip's central directory
      (`sum(zi.file_size for zi in zf.infolist())`) — a nice-to-have that catches a
-     full share before a long extract. Mark optional.
+     full share before a long extract.
 
 3. **Split `download_stream` (L270-299)** into:
    - `download_to_scratch(url, scratch_path) -> int`: keep the existing https
@@ -95,8 +97,9 @@ If pipelines expect a flat layout, this is a one-line change (extract into
    - `download_to_scratch(link, scratch_zip)` inside a `try/finally` that
      `unlink(missing_ok=True)` the scratch zip — gone before the next download
      regardless of success/failure (honors one-zip-at-a-time).
-   - `dest = item_dir / kind`; if it exists from a prior partial run,
-     `shutil.rmtree` it first, then `extract_zip(scratch_zip, dest)`.
+   - Extract to `<item_dir>/.<kind>.partial`, then rename it to
+     `<item_dir>/<kind>` on the same share. This rename is metadata-only:
+     extracted file contents are still written to SMB exactly once.
    - Record extracted stats in `fetched[kind]`.
    - Keep existing error handling: any `RetryableError`/net error (now including
      insufficient-space) leaves the order **marker-less** so the whole order
@@ -126,12 +129,15 @@ If pipelines expect a flat layout, this is a one-line change (extract into
   scratch dir too small or not local; free-space preflight is defending the run.
 - The "stdlib-only, no pip" framing stays accurate — `zipfile`, `tempfile`,
   `shutil.disk_usage` are all stdlib.
+- Add an upgrade procedure and a one-time, idempotent migration script for
+  legacy ZIP folders. Preserve ZIPs by default; delete them only with an
+  explicit flag after verification.
 
 ## Verification
 
-- **Unit-level, offline (no API/creds needed).** Per `CLAUDE.md`, never map `/tmp`
-  or anything outside the project — use a scratch test folder under the working
-  dir and a tiny local `http.server` for the download. Build a small
+- **Unit-level, offline (no API/creds needed).** Use a scratch test folder under
+  the working directory. The existing HTTPS download path is already deployed,
+  so this change does not build a local download service. Build a small
   `results.zip` (a couple text files) and a `reads.zip` containing a real
   `*.fastq.gz` member, then assert: (a) the share dir gets `results/` + `reads/`;
   (b) the `fastq.gz` member is byte-identical to the original (still gzipped);

@@ -12,12 +12,14 @@ WHAT THIS IS
     For each completed order it creates a folder named after the order's item
     code and saves, inside that folder:
 
-        <item_code>/<item_code>_results.zip   fasta / gbk / reporting files
-        <item_code>/<item_code>_reads.zip     raw reads (fastq)
-        <item_code>/.complete                 marker + manifest, written LAST
+        <item_code>/results/      fasta / gbk / reporting files
+        <item_code>/reads/        raw reads (the *.fastq.gz members stay gzipped)
+        <item_code>/.complete     marker + manifest, written LAST
 
-    The zips are left zipped on purpose. pod5 (raw signal) is intentionally not
-    fetched.
+    Each deliverable zip is buffered on fast local scratch, extracted straight
+    to a hidden staging folder on the share, and exposed with a same-share
+    rename. The zip never touches the share and extracted file data is written
+    there only once. pod5 (raw signal) is intentionally not fetched.
 
 WHY IT EXISTS / WHO SET IT UP
     Stopgap set up by <YOUR NAME / TEAM> on <DATE SET UP> so results land
@@ -43,6 +45,11 @@ CONFIG (environment variables; supplied by the systemd unit's EnvironmentFile)
     PLASMIDSAURUS_CLIENT_SECRET   (required)  OAuth client secret
     PLASMIDSAURUS_DATA_DIR        (required unless you edit DATA_DIR below)
                                   destination folder on the mounted share
+    PLASMIDSAURUS_SCRATCH_DIR     (optional) local scratch for one zip at a time;
+                                  defaults to the system temporary directory
+    PLASMIDSAURUS_MIN_FREE        (optional) minimum scratch bytes required when
+                                  a download has no Content-Length (default:
+                                  536870912, or 512 MiB)
     PLASMIDSAURUS_SINCE           (optional)  YYYY-MM-DD. Only fetch orders
                                   completed on/after this date. Leave unset to
                                   backfill the whole order history (a few/run).
@@ -64,19 +71,26 @@ Built from the request patterns in https://github.com/plasmidsaurus/api_docs
 
 import argparse
 import base64
+import http.client
 import json
 import logging
+import math
 import os
 import shutil
 import socket
+import stat
 import sys
+import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from pathlib import PurePosixPath
 
 
 # ----------------------------------------------------------------------------
@@ -92,6 +106,14 @@ API_URL = "https://app.plasmidsaurus.com"
 # still the placeholder, so it can't silently write to the wrong place.
 DATA_DIR = os.getenv("PLASMIDSAURUS_DATA_DIR", "/CHANGE/ME/plasmidsaurus_data")
 
+# Local scratch used to buffer one zip at a time. Under the documented systemd
+# service, the default respects PrivateTmp=yes.
+SCRATCH_DIR = os.getenv("PLASMIDSAURUS_SCRATCH_DIR", tempfile.gettempdir())
+
+# Used only when a server omits Content-Length. Kept as a string here so a bad
+# environment value can produce a friendly configuration error in main().
+_min_free_env = os.getenv("PLASMIDSAURUS_MIN_FREE", str(512 * 1024 * 1024))
+
 # Which deliverables to fetch. pod5 is deliberately excluded.
 DATA_TYPES = ("results", "reads")
 
@@ -106,15 +128,17 @@ _since_env = os.getenv("PLASMIDSAURUS_SINCE")
 HTTP_TIMEOUT = 120
 CHUNK_SIZE = 1 << 20  # 1 MiB
 
-USER_AGENT = "plasmidsaurus-autofetch/1.0 (stdlib)"
+USER_AGENT = "plasmidsaurus-autofetch/2.0 (stdlib)"
 
 # A run older than this is assumed crashed and its lock is reclaimed.
 STALE_LOCK_AFTER = 6 * 3600
 
 COMPLETE_MARKER = ".complete"
+LAYOUT_VERSION = 2
+MAX_ZIP_MEMBERS = 100_000
 
 # Network errors we treat as transient (HTTPError is a subclass of URLError).
-NET_ERRORS = (urllib.error.URLError, TimeoutError)
+NET_ERRORS = (urllib.error.URLError, TimeoutError, http.client.HTTPException)
 
 log = logging.getLogger("plasmidsaurus_autofetch")
 
@@ -267,43 +291,192 @@ def fetch_link(token: str, code: str, kind: str):
     return payload.get("link")
 
 
-def download_stream(url: str, dest: Path) -> int:
+def ensure_free_space(path: Path, needed_bytes: int, margin: float = 1.05) -> None:
+    """Raise RetryableError unless `path` has enough free bytes plus margin."""
+    required = math.ceil(needed_bytes * margin)
+    try:
+        free = shutil.disk_usage(path).free
+    except OSError as exc:
+        raise RetryableError(f"cannot check free space at {path}: {exc}") from exc
+    if free < required:
+        raise RetryableError(
+            f"not enough free space at {path}: need {required} bytes, have {free}"
+        )
+
+
+def download_to_scratch(
+    url: str, scratch_path: Path, min_free_bytes: int
+) -> int:
     """
-    Stream a URL to `dest` via a temporary .part file, then atomically move it
-    into place. Returns bytes written. Verifies size against Content-Length when
-    the server provides it. The .part file guarantees a half-download is never
-    mistaken for a finished one.
+    Stream a URL to local scratch via a temporary .part file. Returns bytes
+    written and verifies Content-Length when supplied.
     """
     # Defence-in-depth: never let a link from the API send urllib to file://,
     # ftp://, data:, etc. (Don't log the URL -- presigned links carry secrets.)
     scheme = urllib.parse.urlparse(url).scheme
     if scheme != "https":
         raise RetryableError(f"refusing download link with non-https scheme {scheme!r}")
-    part = dest.with_suffix(dest.suffix + ".part")
+    part = scratch_path.with_suffix(scratch_path.suffix + ".part")
+    part.unlink(missing_ok=True)
     written = 0
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        expected = int(resp.headers.get("Content-Length", 0))  # 0 == unknown
-        with open(part, "wb") as fh:
-            while True:
-                chunk = resp.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                written += fh.write(chunk)
-    if expected and written != expected:
-        part.unlink(missing_ok=True)
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            raw_length = resp.headers.get("Content-Length")
+            try:
+                expected = int(raw_length) if raw_length else 0
+            except (TypeError, ValueError) as exc:
+                raise RetryableError(
+                    f"invalid Content-Length for {scratch_path.name}: {raw_length!r}"
+                ) from exc
+            if expected < 0:
+                raise RetryableError(
+                    f"invalid Content-Length for {scratch_path.name}: {expected}"
+                )
+            ensure_free_space(
+                scratch_path.parent,
+                expected if expected else min_free_bytes,
+                margin=1.05 if expected else 1.0,
+            )
+            with open(part, "wb") as fh:
+                while True:
+                    chunk = resp.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    written += fh.write(chunk)
+        if expected and written != expected:
+            raise RetryableError(
+                f"{scratch_path.name}: incomplete download ({written}/{expected} bytes)"
+            )
+        os.replace(part, scratch_path)
+        return written
+    except NET_ERRORS:
+        raise
+    except OSError as exc:
         raise RetryableError(
-            f"{dest.name}: incomplete download ({written}/{expected} bytes)"
+            f"cannot write scratch download {scratch_path.name}: {exc}"
+        ) from exc
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def _remove_path(path: Path) -> None:
+    """Remove a file, symlink, or directory if present."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _validated_zip_members(zf: zipfile.ZipFile):
+    """Return safe archive members and reject ambiguous/unsafe layouts."""
+    members = zf.infolist()
+    if len(members) > MAX_ZIP_MEMBERS:
+        raise RetryableError(
+            f"archive has {len(members)} entries; limit is {MAX_ZIP_MEMBERS}"
         )
-    os.replace(part, dest)
-    return written
+
+    validated = []
+    seen = set()
+    for info in members:
+        name = info.filename
+        if not name or "\x00" in name or "\\" in name:
+            raise RetryableError(f"archive contains unsafe member name {name!r}")
+        pure = PurePosixPath(name)
+        parts = pure.parts
+        if (
+            pure.is_absolute()
+            or not parts
+            or any(part in ("", ".", "..") for part in parts)
+            or (len(parts[0]) >= 2 and parts[0][1] == ":")
+        ):
+            raise RetryableError(f"archive contains unsafe member path {name!r}")
+        if info.flag_bits & 0x1:
+            raise RetryableError(f"archive member is encrypted: {name!r}")
+
+        unix_mode = info.external_attr >> 16
+        file_type = stat.S_IFMT(unix_mode)
+        if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
+            raise RetryableError(f"archive member has unsupported type: {name!r}")
+
+        relative = Path(*parts)
+        collision_key = unicodedata.normalize("NFC", relative.as_posix()).casefold()
+        if collision_key in seen:
+            raise RetryableError(
+                f"archive has duplicate/colliding member path {name!r}"
+            )
+        seen.add(collision_key)
+        validated.append((info, relative))
+    return validated
+
+
+def extract_zip(scratch_zip: Path, staging_dir: Path) -> dict:
+    """
+    Validate and extract one local zip directly into a staging directory on the
+    share. Reading every member to EOF also verifies its ZIP CRC.
+    """
+    _remove_path(staging_dir)
+    try:
+        with zipfile.ZipFile(scratch_zip) as zf:
+            members = _validated_zip_members(zf)
+            file_members = [
+                (info, relative)
+                for info, relative in members
+                if not info.is_dir()
+            ]
+            total_bytes = sum(info.file_size for info, _ in file_members)
+            ensure_free_space(staging_dir.parent, total_bytes)
+            staging_dir.mkdir(parents=True)
+
+            for info, relative in members:
+                output = staging_dir / relative
+                if info.is_dir():
+                    output.mkdir(parents=True, exist_ok=True)
+                    continue
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as source, open(output, "xb") as destination:
+                    shutil.copyfileobj(source, destination, length=CHUNK_SIZE)
+        return {"files": len(file_members), "bytes": total_bytes}
+    except RetryableError:
+        try:
+            _remove_path(staging_dir)
+        except OSError:
+            pass
+        raise
+    except (OSError, EOFError, RuntimeError, zipfile.BadZipFile) as exc:
+        try:
+            _remove_path(staging_dir)
+        except OSError:
+            pass
+        raise RetryableError(f"cannot extract {scratch_zip.name}: {exc}") from exc
+
+
+def write_manifest_atomic(path: Path, manifest: dict) -> None:
+    """Write a completion manifest atomically in the destination directory."""
+    part = path.with_name(path.name + ".part")
+    try:
+        with open(part, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
 
 
 # ----------------------------------------------------------------------------
 # Per-order processing
 # ----------------------------------------------------------------------------
 
-def process_item(item: dict, token: str, data_dir: Path, dry_run: bool) -> str:
+def process_item(
+    item: dict,
+    token: str,
+    data_dir: Path,
+    scratch_dir: Path,
+    min_free_bytes: int,
+    dry_run: bool,
+) -> str:
     """
     Download every available deliverable for one order into its own folder, then
     write the .complete marker. Returns a short status string for the run summary.
@@ -322,30 +495,63 @@ def process_item(item: dict, token: str, data_dir: Path, dry_run: bool) -> str:
     fetched, errors = {}, []
 
     for kind in DATA_TYPES:
+        work_dir = None
         try:
             link = fetch_link(token, code, kind)
             if not link:
+                _remove_path(item_dir / kind)
                 continue
-            dest = item_dir / f"{code}_{kind}.zip"
-            log.info("  downloading %s ...", dest.name)
-            size = download_stream(link, dest)
-            fetched[kind] = {"file": dest.name, "bytes": size}
-            log.info("  saved %s (%d bytes)", dest.name, size)
-        except (RetryableError, *NET_ERRORS) as exc:
+            work_dir = Path(
+                tempfile.mkdtemp(prefix=f"plasmidsaurus-{code}-{kind}-", dir=scratch_dir)
+            )
+            scratch_zip = work_dir / f"{code}_{kind}.zip"
+            log.info("  downloading %s to local scratch ...", scratch_zip.name)
+            archive_bytes = download_to_scratch(
+                link, scratch_zip, min_free_bytes=min_free_bytes
+            )
+
+            staging = item_dir / f".{kind}.partial"
+            destination = item_dir / kind
+            # A marker-less order has no committed output. Removing an earlier
+            # attempt first avoids needing space for two extracted copies.
+            _remove_path(destination)
+            stats = extract_zip(scratch_zip, staging)
+            os.replace(staging, destination)
+            fetched[kind] = {
+                "directory": kind,
+                "files": stats["files"],
+                "bytes": stats["bytes"],
+                "archive_bytes": archive_bytes,
+            }
+            log.info(
+                "  extracted %s (%d files, %d bytes)",
+                destination,
+                stats["files"],
+                stats["bytes"],
+            )
+        except (RetryableError, OSError, *NET_ERRORS) as exc:
             errors.append(f"{kind}: {exc}")
             log.warning("  problem fetching %s for %s: %s", kind, code, exc)
+            try:
+                _remove_path(item_dir / f".{kind}.partial")
+            except OSError:
+                pass
+        finally:
+            if work_dir is not None:
+                shutil.rmtree(work_dir, ignore_errors=True)
 
     if errors:
         # Leave the folder marker-less so the whole order is retried next run.
         return "partial-error"
 
     manifest = {
+        "layout_version": LAYOUT_VERSION,
         "item_code": code,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "order": {k: item.get(k) for k in ("product_name", "done_date", "quantity", "status")},
         "files": fetched,
     }
-    (item_dir / COMPLETE_MARKER).write_text(json.dumps(manifest, indent=2))
+    write_manifest_atomic(item_dir / COMPLETE_MARKER, manifest)
     return "done" if fetched else "done-empty"
 
 
@@ -415,6 +621,10 @@ def main() -> int:
     parser.add_argument("--once", action="store_true", help="Run one pass (default).")
     parser.add_argument("--dry-run", action="store_true", help="List what would be fetched; download nothing.")
     parser.add_argument("--data-dir", help="Override the destination folder for this run.")
+    parser.add_argument(
+        "--scratch-dir",
+        help="Override the local scratch directory for this run.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir or DATA_DIR)
@@ -428,6 +638,26 @@ def main() -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(data_dir)
+
+    scratch_dir = Path(args.scratch_dir or SCRATCH_DIR)
+    try:
+        min_free_bytes = int(_min_free_env)
+        if min_free_bytes < 0:
+            raise ValueError
+    except ValueError:
+        log.error(
+            "PLASMIDSAURUS_MIN_FREE=%r is not a non-negative byte count.",
+            _min_free_env,
+        )
+        return 2
+    if not args.dry_run:
+        try:
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            if not scratch_dir.is_dir():
+                raise OSError("path is not a directory")
+        except OSError as exc:
+            log.error("Cannot use scratch directory %s: %s", scratch_dir, exc)
+            return 2
 
     client_id = os.getenv("PLASMIDSAURUS_CLIENT_ID")
     client_secret = os.getenv("PLASMIDSAURUS_CLIENT_SECRET")
@@ -463,7 +693,14 @@ def main() -> int:
         summary = {}
         for item in batch:
             try:
-                status = process_item(item, token, data_dir, args.dry_run)
+                status = process_item(
+                    item,
+                    token,
+                    data_dir,
+                    scratch_dir,
+                    min_free_bytes,
+                    args.dry_run,
+                )
             except Exception as exc:  # never let one order kill the whole run
                 status = "error"
                 log.exception("Unexpected error on %s: %s", item.get("code"), exc)
