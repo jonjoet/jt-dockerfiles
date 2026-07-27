@@ -17,6 +17,7 @@ Gather these; they appear as `<<FILL IN: …>>` throughout.
 |---|---|---|
 | `<<SHARE_MOUNT>>` | Where the SMB/CIFS file share is mounted on the VM | `/mnt/seq-share` |
 | `<<DATA_DIR>>` | Destination folder for downloads (under the share) | `/mnt/seq-share/plasmidsaurus_data` |
+| `<<SCRATCH_DIR>>` | Fast, **disk-backed local** scratch with room for the largest single ZIP | `/var/tmp/plasmidsaurus-autofetch` |
 | `<<SERVICE_USER>>` | Dedicated account name to create | `plasmidsaurus` |
 | `<<CLIENT_ID>>` / `<<CLIENT_SECRET>>` | Your Plasmidsaurus API credentials | from your user profile |
 | `<<SCHEDULE>>` | How often to run | `*:0/15` (every 15 min) |
@@ -26,6 +27,18 @@ Gather these; they appear as `<<FILL IN: …>>` throughout.
 Generate the Client ID / Secret on your Plasmidsaurus **user profile** page
 (`https://www.plasmidsaurus.com/user-info`). Store them somewhere safe — the
 secret can't be recovered if lost.
+
+Configure scratch explicitly. It must be backed by a real local disk, not
+`tmpfs`/`ramfs` (RAM), because reads ZIPs can be multi-GB. Check the filesystem
+that backs the intended parent directory before creating the subdirectory:
+
+```bash
+findmnt -no SOURCE,TARGET,FSTYPE,OPTIONS -T /var/tmp
+```
+
+`/var/tmp` is commonly disk-backed, but verify rather than assume. If the
+reported type is `tmpfs` or `ramfs`, choose a path on a local disk. Scratch needs
+room for the largest **single** deliverable ZIP.
 
 ---
 
@@ -125,6 +138,9 @@ sudo tee /etc/plasmidsaurus-autofetch/environment >/dev/null <<'EOF'
 PLASMIDSAURUS_CLIENT_ID=<<CLIENT_ID>>
 PLASMIDSAURUS_CLIENT_SECRET=<<CLIENT_SECRET>>
 PLASMIDSAURUS_DATA_DIR=<<DATA_DIR>>
+PLASMIDSAURUS_SCRATCH_DIR=<<SCRATCH_DIR>>
+# Used when the server does not report a ZIP size (default: 512 MiB, in bytes).
+#PLASMIDSAURUS_MIN_FREE=536870912
 # Uncomment to limit the first-run backfill:
 #PLASMIDSAURUS_SINCE=<<SINCE>>
 EOF
@@ -172,6 +188,14 @@ ReadWritePaths=<<DATA_DIR>>
 > If `ProtectSystem=strict` ever interferes with the CIFS mount, downgrade it to
 > `ProtectSystem=full` (which only protects `/usr`, `/boot`, `/etc`) and keep the
 > rest.
+>
+> `PrivateTmp=yes` makes `/tmp` and `/var/tmp` private to the service, but it
+> does **not** make them disk-backed: they still use the host filesystem beneath
+> those paths. Verify the filesystem as described in section 0. A scratch
+> directory under verified `/tmp` or `/var/tmp` needs no additional
+> `ReadWritePaths` entry. For a path elsewhere, create it, make it writable by
+> `<<SERVICE_USER>>`, and add it to `ReadWritePaths=`. Only one ZIP is buffered
+> at a time.
 
 ---
 
@@ -217,7 +241,8 @@ sudo journalctl -u plasmidsaurus-autofetch.service -n 50 --no-pager
 Confirm files landed:
 
 ```bash
-ls -la <<DATA_DIR>>/            # per-order folders appear here
+find <<DATA_DIR>>/<ITEM_CODE> -maxdepth 2 -type f
+# Results are under results/; reads remain compressed under reads/ as *.fastq.gz.
 cat <<DATA_DIR>>/<ITEM_CODE>/.complete   # manifest for a finished order
 ```
 
@@ -238,11 +263,103 @@ systemctl list-timers plasmidsaurus-autofetch.timer   # shows next run time
 - **Logs (system):** `sudo journalctl -u plasmidsaurus-autofetch.service`
 - **Logs (on the share, next to the data):** `<<DATA_DIR>>/_autofetch.log`
 - **What's been fetched:** one folder per order code under `<<DATA_DIR>>`, each
-  with a `.complete` manifest once fully downloaded.
+  with extracted `results/` and/or `reads/` folders and a `.complete` manifest
+  once fully downloaded. Files in `reads/` remain `*.fastq.gz`.
 
 ---
 
-## 12. Disable / uninstall
+## 12. Upgrade from the legacy ZIP layout
+
+Version 2 downloads each ZIP to local scratch and extracts its members directly
+to the share. Existing completed orders are skipped based on `.complete`, so
+installing the new downloader alone will **not** redownload or convert them.
+Use the included one-time migration script to make old folders match the new
+layout.
+
+The migration script must remain beside `plasmidsaurus_autofetch.py` when run;
+it reuses the downloader's ZIP validation and extraction code.
+
+1. Stop scheduled and active runs:
+
+   ```bash
+   sudo systemctl stop plasmidsaurus-autofetch.timer
+   sudo systemctl stop plasmidsaurus-autofetch.service
+   ```
+
+2. Take a share snapshot or other backup if one is available. Check destination
+   free space before migrating:
+
+   ```bash
+   df -h <<DATA_DIR>>
+   ```
+
+   The default safe migration preserves every legacy ZIP during the first pass,
+   so the share must temporarily hold the ZIPs **and** all extracted files.
+   Results text/sequence files can expand several-fold. The script preflights
+   each order and fails cleanly if space runs out, but the migration cannot
+   finish until space is available. After inspection, step 5's `--delete-zips`
+   pass reclaims the archive space.
+
+   Then install the updated downloader:
+
+   ```bash
+   sudo install -m 0755 plasmidsaurus_autofetch.py /usr/local/bin/plasmidsaurus-autofetch
+   ```
+
+3. Add an explicit, verified disk-backed `PLASMIDSAURUS_SCRATCH_DIR` to the
+   environment file. Apply the permissions and systemd `ReadWritePaths`
+   guidance in step 7 when using a path outside `/tmp` or `/var/tmp`, then run:
+
+   ```bash
+   sudo systemctl daemon-reload
+   ```
+
+4. From this repository directory, inventory the legacy folders and migrate
+   them as the service account:
+
+   ```bash
+   sudo -u <<SERVICE_USER>> python3 migrate_legacy_zips.py \
+     --data-dir <<DATA_DIR>> --dry-run
+
+   sudo -u <<SERVICE_USER>> python3 migrate_legacy_zips.py \
+     --data-dir <<DATA_DIR>>
+   ```
+
+   Extraction is staged on the share and then renamed into `results/` and
+   `reads/`; no extracted file is copied a second time. The script rewrites
+   `.complete` to layout version 2 only after an order succeeds. It is safe to
+   rerun after interruption.
+
+5. Inspect several orders and their manifests. Legacy ZIPs are intentionally
+   retained on the first pass:
+
+   ```bash
+   find <<DATA_DIR>>/<ITEM_CODE> -maxdepth 2 -type f
+   python3 -m json.tool <<DATA_DIR>>/<ITEM_CODE>/.complete
+   ```
+
+   Once satisfied, remove only the successfully migrated legacy ZIPs:
+
+   ```bash
+   sudo -u <<SERVICE_USER>> python3 migrate_legacy_zips.py \
+     --data-dir <<DATA_DIR>> --delete-zips
+   ```
+
+   No downloader hashes need updating: `.complete` records counts and byte
+   sizes, not checksums. Regenerate any separately maintained hashdeep/checksum
+   inventory because paths and the set of files have changed.
+
+6. Test one normal run and restart the timer:
+
+   ```bash
+   sudo systemctl start plasmidsaurus-autofetch.service
+   sudo journalctl -u plasmidsaurus-autofetch.service -n 50 --no-pager
+   sudo systemctl start plasmidsaurus-autofetch.timer
+   ```
+
+---
+
+## 13. Disable / uninstall
 
 Turn off the schedule (leaves everything else in place):
 
@@ -265,7 +382,7 @@ sudo userdel <<SERVICE_USER>>
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
@@ -274,5 +391,18 @@ sudo userdel <<SERVICE_USER>>
 | `CLIENT_ID / CLIENT_SECRET not set` | Env file not loaded or keys missing (step 6). |
 | First run tries to pull years of old orders | Expected — it does 5/run. To bound it, set `PLASMIDSAURUS_SINCE` (step 6). |
 | An order shows a folder but no `.complete` | A download was interrupted; it will retry on the next run. Safe. |
+| `not enough free space` / an order retries | The disk-backed local scratch or destination share is too full. Scratch must hold the largest individual ZIP; verify it is not `tmpfs`/`ramfs` (section 0). |
+| Legacy ZIP folders remain after migration | Expected unless `--delete-zips` was explicitly supplied after verification (step 12). |
 | Timer never fires | `systemctl list-timers`; check `OnCalendar` with `systemd-analyze calendar`. |
 | Runs but fetches nothing | Normal if everything complete is already on disk (see the log line). |
+
+---
+
+## 15. Repository checks
+
+The focused offline suite uses only the standard library and creates temporary
+files under this service directory:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
