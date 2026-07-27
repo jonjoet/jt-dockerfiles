@@ -411,6 +411,19 @@
   }
   .export-section .export-info { flex: 1; font-size: 12px; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }
 
+  .namespace-info {
+    display: none;
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 6px;
+    background: rgba(167, 139, 250, 0.08);
+    color: var(--text-dim);
+    font: 11px/1.55 'IBM Plex Mono', monospace;
+  }
+
+  .namespace-info strong { color: var(--purple); }
+
   /* Empty state */
   .empty-state { text-align: center; padding: 64px 24px; color: var(--text-muted); }
   .empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
@@ -503,9 +516,14 @@
       <label class="toggle" title="When a name appears on more than one record, append the source-file stem (and a counter if needed) to keep every export name unique.">
         <input type="checkbox" id="autoDisambig"> auto-disambiguate names
       </label>
+      <label class="toggle" title="When independently generated GFF files reuse feature IDs, treat each input GFF as a separate ID namespace and rewrite ID, Parent, and Derives_from together.">
+        <input type="checkbox" id="namespaceGffIds"> namespace conflicting GFF IDs by file
+      </label>
       <button class="purple" onclick="addOutput()">+ Add output</button>
       <button class="danger" onclick="resetAll()">Reset</button>
     </div>
+
+    <div class="namespace-info" id="namespaceInfo"></div>
 
     <div class="table-wrap">
       <div class="table-scroll">
@@ -540,6 +558,8 @@ let fastaFileNames = [];   // { id, name, count, errors, warnings }
 let sortCol = 'length';
 let sortDir = -1;          // -1 = desc
 let autoDisambiguate = false;
+let namespaceGffIds = false;
+let namespacePlanCache = null;
 let recordSeq = 0;
 let outputSeq = 0;
 let fastaSourceSeq = 0;
@@ -628,6 +648,30 @@ function parseAttributes(text) {
     attrs.set(field.slice(0, eq).trim(), field.slice(eq + 1).trim());
   }
   return attrs;
+}
+
+function attributeFields(text) {
+  if (!text || text === '.') return [];
+  return text.split(';').map(raw => {
+    const eq = raw.indexOf('=');
+    if (eq <= 0) return { raw, key: null, value: null };
+    return {
+      raw,
+      key: raw.slice(0, eq).trim(),
+      value: raw.slice(eq + 1).trim()
+    };
+  });
+}
+
+function relationshipReferences(feature) {
+  const references = [];
+  for (const field of attributeFields(feature.cols[8])) {
+    if (field.key !== 'Parent' && field.key !== 'Derives_from') continue;
+    for (const value of field.value.split(',')) {
+      references.push({ attribute: field.key, value: value.trim() });
+    }
+  }
+  return references;
 }
 
 function parseGffDetailed(text) {
@@ -723,6 +767,7 @@ async function loadFastaFiles(fileList, generation = loadGeneration) {
   }
   document.getElementById('fastaBox').classList.add('loaded');
   if (outputs.length === 0 && records.length > 0) addOutput();
+  namespacePlanCache = null;
   rematchGff();
   rebuild();
 }
@@ -751,6 +796,7 @@ async function loadGffFiles(fileList, generation = loadGeneration) {
     gffSources.push(source);
   }
   document.getElementById('gffBox').classList.add('loaded');
+  namespacePlanCache = null;
   rematchGff();
   rebuild();
 }
@@ -834,6 +880,10 @@ document.getElementById('gffInput').addEventListener('change', e => {
     const generation = loadGeneration;
     gffLoadChain = gffLoadChain.then(() => loadGffFiles(files, generation));
   }
+});
+document.getElementById('namespaceGffIds').addEventListener('change', e => {
+  namespaceGffIds = e.target.checked;
+  rebuild();
 });
 
 // Drag & drop highlighting (the hidden file input already accepts drops)
@@ -934,10 +984,139 @@ function outputFeatureEntries(output) {
   return entries;
 }
 
-function featureIdConflicts(output) {
-  const groups = new Map();
+function allMatchedFeatureEntries() {
+  const entries = [];
+  for (const record of records) entries.push(...featureEntriesForRecord(record));
+  return entries;
+}
+
+function gffNamespacePrefixes() {
+  const prefixes = new Map();
+  const used = new Set();
+  for (const source of gffSources) {
+    const base = sanitize(stem(source.name)) || 'gff';
+    let prefix = base;
+    let suffix = 2;
+    while (used.has(prefix)) prefix = `${base}.${suffix++}`;
+    used.add(prefix);
+    prefixes.set(source.id, prefix);
+  }
+  return prefixes;
+}
+
+function gffNamespacePlan() {
+  if (namespacePlanCache) return namespacePlanCache;
+  const entries = allMatchedFeatureEntries();
+  const byId = new Map();
+  const bySourceId = new Map();
+  for (const entry of entries) {
+    const id = entry.feature.attrs.get('ID');
+    if (!id) continue;
+    if (!byId.has(id)) byId.set(id, new Map());
+    const sources = byId.get(id);
+    if (!sources.has(entry.source.id)) sources.set(entry.source.id, []);
+    sources.get(entry.source.id).push(entry);
+
+    if (!bySourceId.has(entry.source.id)) bySourceId.set(entry.source.id, new Map());
+    const sourceIds = bySourceId.get(entry.source.id);
+    if (!sourceIds.has(id)) sourceIds.set(id, []);
+    sourceIds.get(id).push(entry);
+  }
+  const collisionIds = new Set();
+  for (const [id, sources] of byId) if (sources.size > 1) collisionIds.add(id);
+  namespacePlanCache = {
+    entries,
+    byId,
+    bySourceId,
+    collisionIds,
+    prefixes: gffNamespacePrefixes()
+  };
+  return namespacePlanCache;
+}
+
+function gffNamespacingActive(plan = gffNamespacePlan()) {
+  return namespaceGffIds && plan.collisionIds.size > 0;
+}
+
+function effectiveFeatureId(entry, plan = gffNamespacePlan()) {
+  const id = entry.feature.attrs.get('ID');
+  if (!id || !gffNamespacingActive(plan)) return id;
+  return `${plan.prefixes.get(entry.source.id)}:${id}`;
+}
+
+function outputIdIndex(output) {
+  const bySourceId = new Map();
   for (const entry of outputFeatureEntries(output)) {
     const id = entry.feature.attrs.get('ID');
+    if (!id) continue;
+    if (!bySourceId.has(entry.source.id)) bySourceId.set(entry.source.id, new Set());
+    bySourceId.get(entry.source.id).add(id);
+  }
+  return bySourceId;
+}
+
+function resolveRelationshipReference(sourceId, rawId, outputIds, plan = gffNamespacePlan()) {
+  const ownIds = plan.bySourceId.get(sourceId);
+  if (ownIds && ownIds.has(rawId)) {
+    if (outputIds.get(sourceId)?.has(rawId)) return { targetSourceId: sourceId };
+    return { error: `target ID '${rawId}' from the same GFF is not included in this output` };
+  }
+
+  const candidates = plan.byId.get(rawId);
+  if (!candidates || candidates.size === 0) return { error: `target ID '${rawId}' does not exist` };
+  if (candidates.size > 1) {
+    const names = [...candidates.keys()].map(id => gffSources.find(source => source.id === id)?.name || id);
+    return { error: `target ID '${rawId}' is ambiguous across ${names.join(', ')}` };
+  }
+
+  const targetSourceId = candidates.keys().next().value;
+  if (!outputIds.get(targetSourceId)?.has(rawId)) {
+    const sourceName = gffSources.find(source => source.id === targetSourceId)?.name || targetSourceId;
+    return { error: `target ID '${rawId}' from ${sourceName} is not included in this output` };
+  }
+  return { targetSourceId };
+}
+
+function relationshipReferenceIssues(output, plan = gffNamespacePlan()) {
+  if (!gffNamespacingActive(plan)) return [];
+  const issues = [];
+  const outputIds = outputIdIndex(output);
+  for (const entry of outputFeatureEntries(output)) {
+    for (const reference of relationshipReferences(entry.feature)) {
+      const resolution = resolveRelationshipReference(entry.source.id, reference.value, outputIds, plan);
+      if (resolution.error) {
+        issues.push(`${entry.source.name} line ${entry.feature.lineNo}: ${reference.attribute} ${resolution.error}`);
+      }
+    }
+  }
+  return issues;
+}
+
+function rewrittenRelationshipId(sourceId, rawId, outputIds, plan) {
+  const resolution = resolveRelationshipReference(sourceId, rawId, outputIds, plan);
+  if (resolution.error) return rawId;
+  return `${plan.prefixes.get(resolution.targetSourceId)}:${rawId}`;
+}
+
+function rewriteFeatureAttributes(feature, source, outputIds, plan = gffNamespacePlan()) {
+  if (!gffNamespacingActive(plan) || !feature.cols[8] || feature.cols[8] === '.') return feature.cols[8];
+  return attributeFields(feature.cols[8]).map(field => {
+    if (!field.key) return field.raw;
+    if (field.key === 'ID') return `ID=${plan.prefixes.get(source.id)}:${field.value}`;
+    if (field.key === 'Parent' || field.key === 'Derives_from') {
+      const rewritten = field.value.split(',').map(value =>
+        rewrittenRelationshipId(source.id, value.trim(), outputIds, plan)
+      );
+      return `${field.key}=${rewritten.join(',')}`;
+    }
+    return field.raw;
+  }).join(';');
+}
+
+function featureIdConflicts(output, plan = gffNamespacePlan()) {
+  const groups = new Map();
+  for (const entry of outputFeatureEntries(output)) {
+    const id = effectiveFeatureId(entry, plan);
     if (!id) continue;
     if (!groups.has(id)) groups.set(id, []);
     groups.get(id).push(entry);
@@ -971,6 +1150,12 @@ function outputBlockers(output, nameMap = resolveExportNames()) {
   if (unresolved.length) blockers.push(`${unresolved.length} ambiguous GFF-to-FASTA assignment(s) are unresolved`);
   const idConflicts = featureIdConflicts(output);
   if (idConflicts.size) blockers.push(`conflicting GFF3 feature ID(s): ${[...idConflicts.keys()].join(', ')}`);
+  const referenceIssues = relationshipReferenceIssues(output);
+  if (referenceIssues.length) {
+    const shown = referenceIssues.slice(0, 5);
+    const remainder = referenceIssues.length - shown.length;
+    blockers.push(`GFF3 relationship reference(s) cannot be namespaced safely: ${shown.join('; ')}${remainder ? `; and ${remainder} more` : ''}`);
+  }
   return blockers;
 }
 
@@ -1021,6 +1206,7 @@ function rebuild() {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('workspace').style.display = '';
   renderStats();
+  renderNamespaceInfo();
   renderTable();
   renderOutputs();
 }
@@ -1052,8 +1238,36 @@ function renderDiagnostics() {
   banner.classList.toggle('error', errors.length > 0);
 }
 
+function renderNamespaceInfo() {
+  const info = document.getElementById('namespaceInfo');
+  if (!namespaceGffIds) {
+    info.style.display = 'none';
+    info.innerHTML = '';
+    return;
+  }
+  const plan = gffNamespacePlan();
+  info.style.display = 'block';
+  if (!plan.collisionIds.size) {
+    info.innerHTML = '<strong>ID namespacing enabled:</strong> no cross-file feature-ID collisions were found, so GFF attributes will remain unchanged.';
+    return;
+  }
+  let idFields = 0;
+  let references = 0;
+  for (const entry of plan.entries) {
+    if (entry.feature.attrs.has('ID')) idFields++;
+    references += relationshipReferences(entry.feature).length;
+  }
+  const mappings = gffSources.map(source =>
+    `${escapeHtml(source.name)} → <strong>${escapeHtml(plan.prefixes.get(source.id))}:</strong>`
+  ).join(' · ');
+  info.innerHTML = `<strong>ID namespacing active:</strong> ${mappings}<br>` +
+    `${idFields.toLocaleString()} ID field${idFields === 1 ? '' : 's'} and ${references.toLocaleString()} Parent/Derives_from reference${references === 1 ? '' : 's'} will be rewritten in matched annotations. ` +
+    `Name, Alias, and Target are unchanged. Unresolved or ambiguous relationships block export.`;
+}
+
 function assignGffMatch(key, rid) {
   if (rid) gffAssignments.set(key, rid); else gffAssignments.delete(key);
+  namespacePlanCache = null;
   rebuild();
 }
 
@@ -1298,10 +1512,13 @@ function resetAll() {
   if (!confirm('Clear all loaded files and outputs?')) return;
   loadGeneration++;
   records = []; outputs = []; gffSources = []; gffAssignments = new Map(); fastaFileNames = [];
+  namespacePlanCache = null;
   recordSeq = 0; outputSeq = 0; fastaSourceSeq = 0; gffSourceSeq = 0;
   document.getElementById('fastaBox').classList.remove('loaded');
   document.getElementById('gffBox').classList.remove('loaded');
   document.getElementById('searchBox').value = '';
+  namespaceGffIds = false;
+  document.getElementById('namespaceGffIds').checked = false;
   rebuild();
 }
 
@@ -1322,6 +1539,8 @@ function buildGff(o, nameMap) {
   const lines = ['##gff-version 3'];
   const entriesByRecord = new Map();
   const directives = new Set();
+  const namespacePlan = gffNamespacePlan();
+  const outputIds = outputIdIndex(o);
   for (const r of mem) {
     const entries = featureEntriesForRecord(r);
     entriesByRecord.set(r.id, entries);
@@ -1333,9 +1552,10 @@ function buildGff(o, nameMap) {
   }
   for (const r of mem) {
     const nm = nameMap[r.id];
-    for (const { feature } of entriesByRecord.get(r.id) || []) {
+    for (const { feature, source } of entriesByRecord.get(r.id) || []) {
       const cols = feature.cols.slice();
       cols[0] = nm; // rewrite seqid to match the FASTA header
+      cols[8] = rewriteFeatureAttributes(feature, source, outputIds, namespacePlan);
       lines.push(cols.join('\t'));
     }
   }

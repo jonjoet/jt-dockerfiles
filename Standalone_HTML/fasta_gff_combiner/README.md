@@ -11,6 +11,7 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
 - **Name-collision handling** — if two different sequences would share a name within the same output (an invalid FASTA/GFF), it's flagged per-output. Toggle **auto-disambiguate** (appends the source-file stem, plus a counter if needed) or rename sequences inline.
 - **Source-aware GFF matching** — unique seqids match automatically. If a seqid occurs in more than one FASTA record, the page asks which exact record a GFF file annotates instead of copying annotations onto every duplicate.
 - **GFF seqid sync** — when a sequence is renamed, its matched features' seqid column is rewritten to match the FASTA header.
+- **Opt-in GFF ID namespacing** — when independent GFF inputs reuse feature IDs, the tool can give every input a visible, unique prefix and rewrite `ID`, `Parent`, and `Derives_from` together. Unresolved or ambiguous relationships block export rather than being guessed.
 - **Regenerated directives** — each output GFF gets a clean `##gff-version 3` plus full-length `##sequence-region` lines computed from the exported FASTA. Source subranges are not preserved; the page warns before replacing a non-full-length declaration.
 
 ## Features
@@ -29,6 +30,8 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
 - Runs entirely in the browser — no data leaves your machine
 
 > **Note on auto-disambiguate:** it makes export names *globally* unique, so a given source sequence always exports under one consistent name across every output (e.g. `chr1` → `chr1.chromosome` everywhere), even in outputs where it wouldn't have collided.
+
+> **Note on GFF ID namespacing:** this option is off by default and activates only when the loaded, matched annotations reuse an `ID` across GFF files. Once active, every matched input GFF is treated as an independent namespace so its complete feature graph remains internally consistent. Use it when the GFFs were generated independently. References to a unique ID in another GFF are rewritten to that GFF's prefix; missing or ambiguous targets block export. `Name`, `Alias`, and `Target` values are never changed.
 
 ## Usage
 
