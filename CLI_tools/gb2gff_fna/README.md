@@ -1,7 +1,8 @@
 # gb2gff_fna
 
 Convert a **GenBank** file into a **GFF3** annotation file plus a nucleotide
-**FASTA** (`.fna`), in one Docker container.
+**FASTA** (`.fna`), using either a browser interface or the command line in one
+Docker image.
 
 It supports both **Benchling-exported plasmid maps** and genomic GenBank
 records. It preserves explicit `gene → mRNA → CDS` relationships when the input
@@ -33,10 +34,45 @@ For an input `myplasmid.gb` and output directory `out/`:
 The FASTA header and GFF3 `seqid` always match (the LOCUS name is used when the
 record has no accession, which is the usual case for Benchling exports).
 
-## Quick start
+## Web interface
 
-The easiest way is the included wrapper. Edit the variables at the top of
-`run_gb2gff_fna.sh`, then run it:
+The Streamlit interface is the easiest option for interactive use. Start it
+with Docker Compose:
+
+```bash
+docker compose up -d --build
+```
+
+Open <http://localhost:8501>, upload a `.gb`, `.gbk`, or `.genbank` file, and
+download the generated GFF3 and FASTA individually or together as a ZIP. The
+form exposes the output basename, GFF3 source column, and non-destructive
+validation switch. Validation is enabled by default.
+
+The server restarts automatically unless explicitly stopped. Common management
+commands are:
+
+```bash
+docker compose logs -f
+docker compose stop
+docker compose start
+docker compose down
+```
+
+Set `GB2GFF_FNA_PORT` to publish a different host port:
+
+```bash
+GB2GFF_FNA_PORT=1722 docker compose up -d
+```
+
+Uploaded and generated files are held in memory. Validation uses an ephemeral
+in-container `tmpfs`; no host data directory or persistent volume is required.
+Anyone who can reach the web port can submit files, so bind or firewall the
+port appropriately when deploying beyond a trusted network.
+
+## CLI quick start
+
+For command-line use, edit the variables at the top of
+`run_gb2gff_fna.sh`, then run:
 
 ```bash
 ./run_gb2gff_fna.sh
@@ -46,7 +82,7 @@ It auto-builds the image on first run, mounts your input and output
 directories, and runs the conversion as your own user so output files aren't
 owned by root.
 
-## Manual usage
+## Manual CLI usage
 
 Build the image once:
 
@@ -131,8 +167,8 @@ test.
 
 ## Notes
 
-- Built on `mambaorg/micromamba` with Python 3.11, Biopython 1.87, and
-  gffutils 0.14.
+- Built on `mambaorg/micromamba` with Python 3.11, Biopython 1.87,
+  gffutils 0.14, and Streamlit 1.59.2.
 - The converter preserves evidenced hierarchy; it does not invent missing
   transcripts or attempt biological reconstruction from coordinates alone.
 - Embedded-FASTA single-file output and per-record split files are out of scope.
@@ -146,4 +182,6 @@ Run the Docker-only regression and smoke suite:
 ```
 
 The harness mounts only this tool directory and writes timestamped evidence
-under `tests/runs/run_*/` (ignored by Git).
+under `tests/runs/run_*/` (ignored by Git). It exercises the CLI conversion,
+web conversion helper, Compose configuration, and a live Streamlit health
+check.

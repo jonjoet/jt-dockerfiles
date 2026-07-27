@@ -28,6 +28,7 @@ Dockerfiles for tools that run as live web pages. Meant to be run on a VM and se
 |------|-------------|
 | [ccccui](Webservers/ccccui/) | Web UI for Cpf1 (Cas12a) guide RNA design via CHOPCHOP |
 | [D-genies](Webservers/D-genies/) | Interactive dot-plot visualization of genome alignments |
+| [gb2gff_fna GUI](CLI_tools/gb2gff_fna/) | Streamlit interface for GenBank → GFF3 + nucleotide FASTA conversion |
 | [p3p_retry](Webservers/p3p_retry/) | Primer3Plus web interface |
 | [Ribbon](Webservers/Ribbon/) | Structural variant visualization from split/supplementary alignments |
 | [sequenceserver](Webservers/sequenceserver/) | Web frontend for BLAST+ searches against custom databases |
