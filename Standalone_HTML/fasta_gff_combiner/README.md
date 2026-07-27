@@ -31,7 +31,7 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
 
 > **Note on auto-disambiguate:** it makes export names *globally* unique, so a given source sequence always exports under one consistent name across every output (e.g. `chr1` → `chr1.chromosome` everywhere), even in outputs where it wouldn't have collided.
 
-> **Note on GFF ID namespacing:** this option is off by default and activates only when the loaded, matched annotations reuse an `ID` across GFF files. Once active, every matched input GFF is treated as an independent namespace so its complete feature graph remains internally consistent. Use it when the GFFs were generated independently. References to a unique ID in another GFF are rewritten to that GFF's prefix; missing or ambiguous targets block export. `Name`, `Alias`, and `Target` values are never changed.
+> **Note on GFF ID namespacing:** this option is off by default and activates only when the loaded, matched annotations reuse an `ID` across GFF files. Once active, every matched input GFF is treated as an independent namespace so its complete feature graph remains internally consistent. Use it when the GFFs were generated independently. References to a unique ID in another GFF are rewritten to that GFF's prefix; missing or ambiguous targets block export. If a relationship target exists but its feature was assigned to a different output, namespacing also blocks the output instead of emitting a dangling reference. That block exposes a pre-existing problem in the input or output split; namespacing did not create it. `Name`, `Alias`, and `Target` values are never changed.
 
 ## Usage
 
