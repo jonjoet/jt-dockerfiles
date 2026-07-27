@@ -5,6 +5,7 @@ services:
     image: gb2gff_fna:latest
     restart: unless-stopped
     init: true
+    mem_limit: "${GB2GFF_FNA_MEMORY_LIMIT:-1g}"
     ports:
       - "${GB2GFF_FNA_PORT:-8501}:8501"
     environment:
@@ -20,6 +21,8 @@ services:
       - /opt/gb2gff_fna_web.py
       - --server.address=0.0.0.0
       - --server.port=8501
+      - "--server.maxUploadSize=${GB2GFF_FNA_MAX_UPLOAD_MB:-50}"
+      - "--server.maxMessageSize=${GB2GFF_FNA_MAX_UPLOAD_MB:-50}"
       - --browser.gatherUsageStats=false
     healthcheck:
       test:

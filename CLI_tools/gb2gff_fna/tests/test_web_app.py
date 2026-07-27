@@ -78,6 +78,19 @@ class WebAppTests(unittest.TestCase):
                         requested_prefix=prefix,
                     )
 
+    def test_header_unsafe_output_prefix_is_rejected(self):
+        for prefix in ('bad"name', "bad\nname", "bad\rname", "bad\x7fname"):
+            with self.subTest(prefix=prefix):
+                with self.assertRaisesRegex(
+                    gb2gff_fna_web.ConversionError,
+                    "quotes or control characters",
+                ):
+                    gb2gff_fna_web.convert_upload(
+                        self.example_bytes,
+                        self.example_path.name,
+                        requested_prefix=prefix,
+                    )
+
     def test_empty_and_non_genbank_uploads_are_rejected(self):
         with self.assertRaisesRegex(
             gb2gff_fna_web.ConversionError, "uploaded file is empty"
@@ -87,6 +100,27 @@ class WebAppTests(unittest.TestCase):
             gb2gff_fna_web.ConversionError, "No GenBank records"
         ):
             gb2gff_fna_web.convert_upload(b"not a GenBank record\n", "bad.gb")
+
+    def test_validation_failure_retains_outputs_and_diagnostics(self):
+        invalid = self.example_bytes.replace(
+            b"circular", b"linear  ", 1
+        ).replace(b"join(55..60,1..5)", b"55..80", 1)
+        validated = gb2gff_fna_web.convert_upload(
+            invalid,
+            "linear.gb",
+            validate=True,
+        )
+        unvalidated = gb2gff_fna_web.convert_upload(
+            invalid,
+            "linear.gb",
+            validate=False,
+        )
+
+        self.assertFalse(validated.validated)
+        self.assertIn("out-of-bounds feature on non-circular", validated.diagnostics)
+        self.assertEqual(validated.gff3, unvalidated.gff3)
+        self.assertEqual(validated.fna, unvalidated.fna)
+        self.assertGreater(len(validated.archive), 0)
 
     def test_streamlit_page_renders_without_exceptions(self):
         app_path = Path(__file__).resolve().parents[1] / "gb2gff_fna_web.py"

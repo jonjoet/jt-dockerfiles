@@ -5,6 +5,7 @@ import io
 import os
 import tempfile
 import threading
+import unicodedata
 import warnings
 import zipfile
 from contextlib import redirect_stderr
@@ -52,6 +53,13 @@ def output_prefix(uploaded_name, requested_prefix=""):
     ):
         raise ConversionError(
             "Output basename must be a filename, not a path."
+        )
+    if '"' in candidate or any(
+        unicodedata.category(character).startswith("C")
+        for character in candidate
+    ):
+        raise ConversionError(
+            "Output basename cannot contain quotes or control characters."
         )
     if len(candidate) > 128:
         raise ConversionError("Output basename must be 128 characters or fewer.")
@@ -146,12 +154,6 @@ def convert_upload(
         diagnostics_text = "\n".join(
             part for part in (warning_text, diagnostics_text) if part
         )
-    if validated is False:
-        raise ConversionError(
-            "The generated GFF3 did not pass validation.\n\n"
-            + (diagnostics_text or "No validator diagnostics were returned.")
-        )
-
     gff3 = gff_text.encode("utf-8")
     fna = fna_text.encode("utf-8")
     return ConversionResult(
@@ -241,10 +243,19 @@ def main():
     if result is None:
         return
 
-    validation_note = (
-        " and passed validation" if result.validated is True else ""
-    )
-    st.success(f"Converted {result.prefix}{validation_note}.")
+    if result.validated is False:
+        st.warning(
+            "Conversion finished, but the generated GFF3 did not pass "
+            "validation. The files are retained for inspection."
+        )
+        if result.diagnostics:
+            with st.expander("Validation diagnostics", expanded=True):
+                st.code(result.diagnostics, language="text")
+    else:
+        validation_note = (
+            " and passed validation" if result.validated is True else ""
+        )
+        st.success(f"Converted {result.prefix}{validation_note}.")
 
     records_col, bases_col, features_col = st.columns(3)
     records_col.metric("Records", f"{result.record_count:,}")
@@ -277,7 +288,7 @@ def main():
             use_container_width=True,
         )
 
-    if result.diagnostics:
+    if result.diagnostics and result.validated is not False:
         with st.expander("Conversion diagnostics"):
             st.code(result.diagnostics, language="text")
 

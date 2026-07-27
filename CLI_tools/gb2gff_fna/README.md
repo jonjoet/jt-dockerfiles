@@ -46,7 +46,9 @@ docker compose up -d --build
 Open <http://localhost:8501>, upload a `.gb`, `.gbk`, or `.genbank` file, and
 download the generated GFF3 and FASTA individually or together as a ZIP. The
 form exposes the output basename, GFF3 source column, and non-destructive
-validation switch. Validation is enabled by default.
+validation switch. Validation is enabled by default. If validation reports a
+problem, the interface keeps both generated files available for inspection and
+shows the diagnostics above their download buttons.
 
 The server restarts automatically unless explicitly stopped. Common management
 commands are:
@@ -66,6 +68,15 @@ GB2GFF_FNA_PORT=1722 docker compose up -d
 
 Uploaded and generated files are held in memory. Validation uses an ephemeral
 in-container `tmpfs`; no host data directory or persistent volume is required.
+Uploads are limited to 50 MB and the container to 1 GB of memory by default.
+Both bounds can be adjusted for larger genomic records:
+
+```bash
+GB2GFF_FNA_MAX_UPLOAD_MB=100 \
+GB2GFF_FNA_MEMORY_LIMIT=2g \
+docker compose up -d
+```
+
 Anyone who can reach the web port can submit files, so bind or firewall the
 port appropriately when deploying beyond a trusted network.
 
