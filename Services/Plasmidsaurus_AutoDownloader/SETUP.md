@@ -306,9 +306,33 @@ it reuses the downloader's ZIP validation and extraction code.
    sudo install -m 0755 plasmidsaurus_autofetch.py /usr/local/bin/plasmidsaurus-autofetch
    ```
 
-3. Add an explicit, verified disk-backed `PLASMIDSAURUS_SCRATCH_DIR` to the
-   environment file. Apply the permissions and systemd `ReadWritePaths`
-   guidance in step 7 when using a path outside `/tmp` or `/var/tmp`, then run:
+3. Add an explicit, verified disk-backed `PLASMIDSAURUS_SCRATCH_DIR`:
+
+   ```bash
+   sudoedit /etc/plasmidsaurus-autofetch/environment
+   # Set: PLASMIDSAURUS_SCRATCH_DIR=<<SCRATCH_DIR>>
+   ```
+
+   Changing only the environment file does not require `daemon-reload`; systemd
+   rereads it on every service invocation.
+
+   If `<<SCRATCH_DIR>>` is outside `/tmp` or `/var/tmp`, create it for the
+   service account and add it to the service's writable paths:
+
+   ```bash
+   sudo install -d -o <<SERVICE_USER>> -g <<SERVICE_USER>> -m 0700 <<SCRATCH_DIR>>
+
+   systemctl show -p FragmentPath plasmidsaurus-autofetch.service
+   sudoedit /etc/systemd/system/plasmidsaurus-autofetch.service
+   ```
+
+   In the unit's `[Service]` section, extend the existing setting:
+
+   ```ini
+   ReadWritePaths=<<DATA_DIR>> <<SCRATCH_DIR>>
+   ```
+
+   Because the service unit changed, reload it:
 
    ```bash
    sudo systemctl daemon-reload
