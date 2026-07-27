@@ -31,7 +31,7 @@ mkdir -p "$RUN_DIR"
     echo "  docker run --rm -v $TOOL_DIR:/work:ro --entrypoint /usr/local/bin/_entrypoint.sh $IMAGE python3 -m unittest discover -s /work/tests -v"
     echo "  docker run --rm --user $(id -u):$(id -g) -v $TOOL_DIR:/work --entrypoint /usr/local/bin/_entrypoint.sh $IMAGE python3 /opt/gb2gff_fna.py /work/example/plasmid_benchling.gb -o /work/tests/runs/$(basename "$RUN_DIR")/smoke --validate"
     echo "  GB2GFF_FNA_PORT=$WEB_PORT docker compose up -d --build"
-    echo "  verify Compose health, port publication, tmpfs and memory limit"
+    echo "  verify Compose health, port publication, tmpfs, memory and upload limits"
     echo "  inspect pinned runtime/dependencies and assert AGAT/BioPerl/BCBio are absent"
 } >"$RUN_DIR/RUN.txt"
 
@@ -71,7 +71,7 @@ WEB_CONTAINER="$(
 printf '%s\n' "$WEB_CONTAINER" >"$RUN_DIR/web-container-id.txt"
 
 WEB_READY=0
-for _ in $(seq 1 20); do
+for _ in $(seq 1 45); do
     if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$WEB_CONTAINER")" == "healthy" ]]; then
         WEB_READY=1
         break
@@ -87,6 +87,9 @@ GB2GFF_FNA_PORT="$WEB_PORT" \
 docker inspect --format \
     'Tmpfs={{json .HostConfig.Tmpfs}} Memory={{.HostConfig.Memory}} Ports={{json .HostConfig.PortBindings}}' \
     "$WEB_CONTAINER" >"$RUN_DIR/compose-runtime.log"
+docker inspect --format \
+    'Path={{.Path}} Args={{json .Args}}' \
+    "$WEB_CONTAINER" >"$RUN_DIR/server-command.log"
 if [[ "$WEB_READY" != "1" ]]; then
     echo "Compose service did not become healthy" >&2
     cat "$RUN_DIR/web.log" >&2
@@ -99,6 +102,8 @@ GB2GFF_FNA_PORT="$WEB_PORT" \
 grep -q '"/data/tmp"' "$RUN_DIR/compose-runtime.log"
 grep -q 'Memory=1073741824' "$RUN_DIR/compose-runtime.log"
 grep -q ":$WEB_PORT$" "$RUN_DIR/web-port.log"
+grep -q -- '--server.maxUploadSize=50' "$RUN_DIR/server-command.log"
+grep -q -- '--server.maxMessageSize=50' "$RUN_DIR/server-command.log"
 cleanup_web_stack
 trap - EXIT
 
