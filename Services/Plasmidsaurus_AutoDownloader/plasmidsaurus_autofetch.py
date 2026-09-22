@@ -30,12 +30,18 @@ WHY IT EXISTS / WHO SET IT UP
 HOW IT RUNS
     Invoked on a schedule by a systemd timer (plasmidsaurus-autofetch.timer),
     as a dedicated unprivileged user. See the setup guide for the install.
-    Each run downloads archives for at most MAX_DOWNLOADS_PER_RUN orders.
+    Each run downloads archives for at most five orders by default (configurable
+    with PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN or --max-downloads-per-run).
     Unchanged checks do not use download slots; deferred downloads go first
     next run. Recent orders are watched for late deliverables.
     It can also be run by hand for testing -- see the bottom of this header.
 
 HOW TO DISABLE
+    To leave one order alone, create an empty <item_code>/.ignore file.
+    This silently skips all work for that order, including recovery; remove
+    the file to restore normal eligibility. Stop the service before adding
+    the marker if that order may already be in progress.
+
         sudo systemctl disable --now plasmidsaurus-autofetch.timer
     That stops all scheduled runs. There are no other daemons or packages.
     Removing this file and the two unit files removes it entirely. Data already
@@ -58,6 +64,9 @@ CONFIG (environment variables; supplied by the systemd unit's EnvironmentFile)
                                   to watch for added/changed files (default 45;
                                   0 disables new rechecks). SINCE applies only
                                   to new orders, not this local watch list.
+    PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN
+                                  (optional) positive integer cap on orders
+                                  downloading archives per run (default 5).
 
 DEPENDENCIES
     Python 3.8+ standard library only. No pip packages, no virtualenv.
@@ -128,7 +137,7 @@ DATA_TYPES = ("results", "reads")
 
 # Cap orders whose archive bodies are downloaded, not metadata-only checks.
 # Both deliverables share one slot; interrupted body transfers still count.
-MAX_DOWNLOADS_PER_RUN = 5
+DEFAULT_MAX_DOWNLOADS_PER_RUN = 5
 
 # Only consider orders completed on/after this date, if set (env override).
 _since_env = os.getenv("PLASMIDSAURUS_SINCE")
@@ -145,6 +154,7 @@ STALE_LOCK_AFTER = 6 * 3600
 
 COMPLETE_MARKER = ".complete"
 REFRESH_MARKER = ".refresh.json"
+IGNORE_MARKER = ".ignore"
 QUEUE_FILE = "_autofetch.queue.json"
 LAYOUT_VERSION = 2
 MAX_ZIP_MEMBERS = 100_000
@@ -620,6 +630,9 @@ def process_item(
     """Fetch new or changed deliverables; publish the manifest after all files."""
     code = item["code"]
     item_dir = data_dir / code
+    # The admin override precedes even manifest validation and journal cleanup.
+    if (item_dir / IGNORE_MARKER).exists():
+        return "skip-ignored"
     previous = load_manifest(item_dir)
     retry = (item_dir / REFRESH_MARKER).exists() and not (item_dir / COMPLETE_MARKER).exists()
     if previous is not None:
@@ -835,12 +848,14 @@ def select_work(items: list, since, data_dir: Path, recheck_days: int):
     pending = [
         item for item in select_pending(items, since)
         if not any((data_dir / item["code"] / name).exists()
-                   for name in (COMPLETE_MARKER, REFRESH_MARKER))
+                   for name in (IGNORE_MARKER, COMPLETE_MARKER, REFRESH_MARKER))
     ]
     by_code = {i["code"]: i for i in items if _usable_code(i.get("code"))}
     rechecks = []
     for folder in sorted(data_dir.iterdir()):
         if folder.is_symlink() or not folder.is_dir():
+            continue
+        if (folder / IGNORE_MARKER).exists():
             continue
         try:
             manifest = load_manifest(folder)
@@ -901,6 +916,11 @@ def main() -> int:
         "--recheck-days", default=_recheck_days_env,
         help="Watch orders this many days after first download (default: 45; 0 disables).",
     )
+    parser.add_argument(
+        "--max-downloads-per-run",
+        default=os.getenv("PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN", str(DEFAULT_MAX_DOWNLOADS_PER_RUN)),
+        help="Maximum orders downloading archives per run (positive integer; default: 5).",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir or DATA_DIR)
@@ -921,6 +941,14 @@ def main() -> int:
             raise ValueError
     except (ValueError, OverflowError):
         log.error("PLASMIDSAURUS_RECHECK_DAYS / --recheck-days must be a non-negative integer (at most 999999999).")
+        return 2
+
+    try:
+        max_downloads = int(args.max_downloads_per_run)
+        if max_downloads < 1:
+            raise ValueError
+    except ValueError:
+        log.error("PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN / --max-downloads-per-run must be a positive integer.")
         return 2
 
     scratch_dir = Path(args.scratch_dir or SCRATCH_DIR)
@@ -971,11 +999,11 @@ def main() -> int:
 
         log.info(
             "%d new order(s) pending, %d recheck(s); checking %d with a %d-order download limit",
-            len(pending), len(rechecks), len(batch), MAX_DOWNLOADS_PER_RUN,
+            len(pending), len(rechecks), len(batch), max_downloads,
         )
 
         summary = {}
-        budget = DownloadBudget(MAX_DOWNLOADS_PER_RUN)
+        budget = DownloadBudget(max_downloads)
         deferred = []
         for item in batch:
             if not args.dry_run:

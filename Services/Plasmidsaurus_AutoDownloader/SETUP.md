@@ -146,6 +146,8 @@ PLASMIDSAURUS_SCRATCH_DIR=<<SCRATCH_DIR>>
 # Watch for late Illumina reads / polished assemblies after first download.
 # Default 45 days; 0 disables new rechecks. Existing failed refreshes still retry.
 PLASMIDSAURUS_RECHECK_DAYS=45
+# Maximum orders downloading archives per run (positive integer; default 5):
+PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN=5
 EOF
 
 # Readable only by root and the service user:
@@ -286,19 +288,23 @@ regardless of the window, so crossing the cutoff cannot strand a partial update.
 The original `.complete` `fetched_at` anchors the window; receiving late files
 does not extend it. `PLASMIDSAURUS_SINCE` limits discovery of new orders only.
 Recent downloads remain watched even if the API no longer lists them or changes
-their status. Each timer pass **downloads archives for at most five orders**.
+their status. Each timer pass **downloads archives for at most five orders by
+default**. Set `PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN` in the environment file,
+or override it for one run with `--max-downloads-per-run 10`. The command-line
+option takes precedence. The limit must be a positive integer; zero, negative
+and non-integer values are rejected before any API requests.
 Unchanged checks (HTTP 304) do not consume a slot. Both results and reads ZIPs
 for one order share a single slot; a failed transfer still consumes its slot.
 Once the download budget is full, new orders are deferred without per-order
 network requests. Previously downloaded orders still get conditional checks:
 responses needing an archive download are closed without reading the body and
 deferred, while unchanged checks continue. For example, twenty unchanged orders
-followed by five changed orders can all be handled in one run.
+followed by five changed orders can all be handled in one run at the default limit.
 
 `_autofetch.queue.json` in the data directory remembers the rotation. Downloads
 deferred by the budget go first next run; attempted downloads move behind them,
 including failures or cancellation. This also prevents a server without
-conditional-download support from causing the same first five orders to be
+conditional-download support from causing the same first few orders to be
 downloaded every time. Dry runs list eligible orders without downloading or
 advancing the queue; they cannot predict which orders will use download slots.
 The limit bounds orders downloading archives, not elapsed time or total bytes.
@@ -312,7 +318,7 @@ not stored in manifests. **Validator support has not been verified against
 live customer downloads.** If validators are absent or the server ignores
 them, checking an archive requires downloading the whole ZIP to scratch and
 comparing its members. That consumes a download slot even if the contents turn
-out to be unchanged; once all five slots are used, those checks are deferred.
+out to be unchanged; once all configured slots are used, those checks are deferred.
 Even when only one file changes, the API requires a whole ZIP download.
 
 Each deliverable's `members` inventory in `.complete` maps relative filenames
@@ -357,6 +363,32 @@ requests for this cleanup; dry runs leave journals untouched. A journal without
 behavior remains unchanged, including reporting failure if required archives
 are unavailable; it is never silently marked complete.
 
+### Ignore an individual order
+
+Create an empty `.ignore` file directly inside the order folder:
+
+```bash
+touch "<<DATA_DIR>>/<<ORDER_CODE>>/.ignore"
+```
+
+While the marker exists, the downloader silently skips that order: no per-order
+API requests, archive checks, downloads, file changes, recovery attempts or
+warnings/errors for it. This also applies to dry runs, invalid manifests,
+legacy layouts and interrupted publication with `.refresh.json` but no
+`.complete`. Existing files, manifests, journals and staging folders are left
+untouched. Ignored orders use no download slot and are excluded from the
+eligible queue. The service still fetches the account-wide order list and
+processes other orders normally.
+
+To avoid racing a run already processing the order, stop the timer and service
+before adding the marker, then restart the timer. To ignore an order before
+its first download, create its order-code folder and put `.ignore` inside it.
+
+Remove only `.ignore` to resume normal eligibility. The original `fetched_at`
+still anchors the watch window, so an expired completed order stays expired;
+an interrupted publication becomes eligible for recovery again. Ignoring an
+order does not repair it or mark it complete. Keep its recovery journal.
+
 ### Upgrade an existing extracted installation (layout version 2)
 
 No migration is required for existing `results/` and `reads/` folders. On the VM,
@@ -368,16 +400,17 @@ sudo systemctl stop plasmidsaurus-autofetch.service
 sudo install -m 0755 plasmidsaurus_autofetch.py /usr/local/bin/plasmidsaurus-autofetch
 sudoedit /etc/plasmidsaurus-autofetch/environment
 # Optional: PLASMIDSAURUS_RECHECK_DAYS=45 (the default)
+# Optional: PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN=5 (the default)
 sudo systemctl start plasmidsaurus-autofetch.service
 sudo journalctl -u plasmidsaurus-autofetch.service -n 100 --no-pager
 sudo systemctl start plasmidsaurus-autofetch.timer
 ```
 
 The same procedure applies when upgrading from either earlier late-delivery
-release to the five-download-order budget. There is no additional migration or
+release to the configurable download-order budget (default five). There is no additional migration or
 configuration change. Existing queue files remain compatible; a missing queue
 is created automatically. The manual service start checks eligible orders and
-downloads archives for at most five; timer runs pick up deferred downloads.
+downloads archives for at most the configured number; timer runs pick up deferred downloads.
 
 To cancel a running batch before upgrading, stop the timer and service with
 the first two commands above. Ctrl-C on `systemctl start` may only stop waiting,

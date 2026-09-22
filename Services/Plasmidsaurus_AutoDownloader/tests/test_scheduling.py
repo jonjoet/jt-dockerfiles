@@ -19,11 +19,13 @@ class SchedulingTests(PreservedTestCase):
         self.downloaded = []
         self.unchanged = set()
 
-    def run_main(self, dry_run=False, process=None):
+    def run_main(self, dry_run=False, process=None, limit=None, env_limit=None):
         argv = ['autofetch', '--data-dir', str(self.root),
                 '--scratch-dir', str(self.root / 'scratch')]
         if dry_run:
             argv.append('--dry-run')
+        if limit is not None:
+            argv.extend(['--max-downloads-per-run', str(limit)])
         def record(item, *args, budget):
             code = item['code']
             self.processed.append(code)
@@ -45,7 +47,59 @@ class SchedulingTests(PreservedTestCase):
              mock.patch.object(fetch, 'get_items', return_value=[]), \
              mock.patch.object(fetch, 'select_work', return_value=(self.pending, self.rechecks)), \
              mock.patch.object(fetch, 'process_item', side_effect=record):
+            if env_limit is None:
+                os.environ.pop('PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN', None)
+            else:
+                os.environ['PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN'] = str(env_limit)
             return fetch.main()
+
+    def test_environment_limit_controls_downloads_and_preserves_unchanged_checks(self):
+        self.unchanged = {item['code'] for item in self.rechecks}
+        for limit in (1, 3, 8):
+            with self.subTest(limit=limit):
+                (self.root / fetch.QUEUE_FILE).unlink(missing_ok=True)
+                self.downloaded.clear()
+                self.processed.clear()
+                self.assertEqual(self.run_main(env_limit=limit), 0)
+                self.assertEqual(self.downloaded, ['NEW' + str(i) for i in range(min(limit, 7))])
+                self.assertEqual(len(self.processed), 14)
+
+    def test_cli_limit_overrides_environment_even_when_environment_is_invalid(self):
+        for env_limit in ('1', 'invalid'):
+            with self.subTest(env_limit=env_limit):
+                (self.root / fetch.QUEUE_FILE).unlink(missing_ok=True)
+                self.downloaded.clear()
+                self.assertEqual(self.run_main(limit=8, env_limit=env_limit), 0)
+                self.assertEqual(self.downloaded, [
+                    'NEW0', 'OLD0', 'NEW1', 'OLD1', 'NEW2', 'OLD2', 'NEW3', 'OLD3',
+                ])
+
+    def test_custom_limit_counts_failed_downloads_and_prioritizes_deferred_orders(self):
+        self.assertEqual(self.run_main(limit=2, process=lambda item: 'partial-error'), 1)
+        self.assertEqual(self.downloaded, ['NEW0', 'OLD0'])
+        queue = json.loads((self.root / fetch.QUEUE_FILE).read_text())['orders']
+        self.assertEqual(queue[:2], ['NEW1', 'OLD1'])
+        self.assertEqual(self.run_main(limit=2), 0)
+        self.assertEqual(self.downloaded, ['NEW0', 'OLD0', 'NEW1', 'OLD1'])
+
+    def test_invalid_download_limit_fails_before_api_and_queue_changes(self):
+        queue = self.root / fetch.QUEUE_FILE
+        queue.write_text(json.dumps({'orders': ['NEW0']}))
+        before = queue.read_bytes()
+        for value in ('0', '-1', '1.5', 'invalid', ''):
+            for source in ('environment', 'cli'):
+                with self.subTest(value=value, source=source), \
+                     mock.patch.dict(os.environ, {'PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN': value}), \
+                     mock.patch.object(sys, 'argv', [
+                         'autofetch', '--data-dir', str(self.root),
+                         *(['--max-downloads-per-run', value] if source == 'cli' else []),
+                     ]), \
+                     mock.patch.object(fetch, 'setup_logging'), \
+                     mock.patch.object(fetch, 'get_access_token') as token:
+                    self.assertEqual(fetch.main(), 2)
+                    token.assert_not_called()
+                    self.assertEqual(queue.read_bytes(), before)
+                    self.assertFalse((self.root / '_autofetch.lock').exists())
 
     def test_mixed_backlog_reaches_every_download_with_five_per_run(self):
         for _ in range(3):
