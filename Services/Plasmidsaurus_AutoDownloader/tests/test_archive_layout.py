@@ -73,7 +73,9 @@ class ArchiveLayoutTests(PreservedTestCase):
         scratch_dir.mkdir()
         fastq_gz = gzip.compress(b"@read1\nACGT\n+\n!!!!\n")
 
-        def fake_download(url, scratch_path, min_free_bytes, previous=None):
+        def fake_download(url, scratch_path, min_free_bytes, previous=None, before_download=None):
+            if before_download:
+                before_download()
             with zipfile.ZipFile(scratch_path, "w") as zf:
                 if "results" in scratch_path.name:
                     zf.writestr("report.txt", b"complete\n")
@@ -125,7 +127,9 @@ class ArchiveLayoutTests(PreservedTestCase):
         data_dir.mkdir()
         scratch_dir.mkdir()
 
-        def fake_download(url, scratch_path, min_free_bytes, previous=None):
+        def fake_download(url, scratch_path, min_free_bytes, previous=None, before_download=None):
+            if before_download:
+                before_download()
             scratch_path.write_bytes(b"not a zip")
             return {"archive_bytes": scratch_path.stat().st_size}
 

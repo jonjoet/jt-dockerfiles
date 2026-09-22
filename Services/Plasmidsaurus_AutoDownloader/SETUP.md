@@ -286,15 +286,21 @@ the window, so crossing the cutoff cannot strand a partial update.
 The original `.complete` `fetched_at` anchors the window; receiving late files
 does not extend it. `PLASMIDSAURUS_SINCE` limits discovery of new orders only.
 Recent downloads remain watched even if the API no longer lists them or changes
-their status. Each timer pass handles **at most five orders total**, including
-new downloads, rechecks with no changes, and failed attempts. Remaining orders
-wait for later runs. `_autofetch.queue.json` in the data directory remembers
-the rotation: new downloads and rechecks are interleaved when first queued;
-waiting orders stay ahead of new arrivals. Each attempted order moves to the
-back before processing, including failures or cancellation. This prevents a
-repeatedly failing order from blocking the queue. Dry runs preview the next
-batch without advancing it. Larger watch lists take more timer passes to cycle
-through; the limit bounds order count, not elapsed time or downloaded bytes.
+their status. Each timer pass **downloads archives for at most five orders**.
+Unchanged checks (HTTP 304) do not consume a slot. Both results and reads ZIPs
+for one order share a single slot; a failed transfer still consumes its slot.
+All eligible orders can be checked, even after the download budget is full:
+responses needing an archive download are closed without reading the body and
+deferred, while unchanged checks continue. For example, twenty unchanged orders
+followed by five changed orders can all be handled in one run.
+
+`_autofetch.queue.json` in the data directory remembers the rotation. Downloads
+deferred by the budget go first next run; attempted downloads move behind them,
+including failures or cancellation. This also prevents a server without
+conditional-download support from causing the same first five orders to be
+downloaded every time. Dry runs list eligible orders without downloading or
+advancing the queue; they cannot predict which orders will use download slots.
+The limit bounds orders downloading archives, not elapsed time or total bytes.
 
 The [official API examples](https://github.com/plasmidsaurus/api_docs/blob/main/examples/plasmidsaurus-api-intro.py)
 document results/reads ZIP links, but no per-file listing or revision field.
@@ -303,7 +309,9 @@ The downloader sends conditional GETs using saved `ETag` (preferred) or
 body. Signed URL changes alone do not trigger downloads, and signed URLs are
 not stored in manifests. **Validator support has not been verified against
 live customer downloads.** If validators are absent or the server ignores
-them, each check downloads the whole ZIP to scratch and compares its members.
+them, checking an archive requires downloading the whole ZIP to scratch and
+comparing its members. That consumes a download slot even if the contents turn
+out to be unchanged; once all five slots are used, those checks are deferred.
 Even when only one file changes, the API requires a whole ZIP download.
 
 Each deliverable's `members` inventory in `.complete` maps relative filenames
@@ -316,8 +324,9 @@ members staged across both deliverables, alongside the existing files.
 
 `.complete` describes the last successfully fetched snapshot, not finality at
 the provider. It records `last_checked_at` and `updated_at` in addition to the
-original `fetched_at`. A refresh first saves the previous manifest in
-`.refresh.json`. Download/extraction failures leave the existing snapshot
+original `fetched_at`. Before an admitted download starts, a refresh saves the
+previous manifest in `.refresh.json`. Unchanged and budget-deferred checks do
+not create refresh journals. Download/extraction failures leave the existing snapshot
 untouched. During publication, `.complete` is removed, individual staged files
 are renamed into place, and the new manifest is written last. Publication is
 not an atomic swap of the entire order: consumers must wait for `.complete`
@@ -342,10 +351,11 @@ sudo journalctl -u plasmidsaurus-autofetch.service -n 100 --no-pager
 sudo systemctl start plasmidsaurus-autofetch.timer
 ```
 
-The same procedure applies when upgrading from the first late-delivery release
-to the shared five-order limit. There is no additional migration or configuration
-change. The queue file is created automatically. The manual service start runs
-one batch of at most five orders; subsequent timer runs continue the rotation.
+The same procedure applies when upgrading from either earlier late-delivery
+release to the five-download-order budget. There is no additional migration or
+configuration change. Existing queue files remain compatible; a missing queue
+is created automatically. The manual service start checks eligible orders and
+downloads archives for at most five; timer runs pick up deferred downloads.
 
 To cancel a running batch before upgrading, stop the timer and service with
 the first two commands above. Ctrl-C on `systemctl start` may only stop waiting,

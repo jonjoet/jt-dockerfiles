@@ -30,8 +30,9 @@ WHY IT EXISTS / WHO SET IT UP
 HOW IT RUNS
     Invoked on a schedule by a systemd timer (plasmidsaurus-autofetch.timer),
     as a dedicated unprivileged user. See the setup guide for the install.
-    Each run handles at most MAX_DOWNLOADS_PER_RUN orders total, rotating
-    through new downloads and recent orders watched for late deliverables.
+    Each run downloads archives for at most MAX_DOWNLOADS_PER_RUN orders.
+    Unchanged checks do not use download slots; deferred downloads go first
+    next run. Recent orders are watched for late deliverables.
     It can also be run by hand for testing -- see the bottom of this header.
 
 HOW TO DISABLE
@@ -124,8 +125,8 @@ _min_free_env = os.getenv("PLASMIDSAURUS_MIN_FREE", str(512 * 1024 * 1024))
 # Which deliverables to fetch. pod5 is deliberately excluded.
 DATA_TYPES = ("results", "reads")
 
-# Shared cap for new downloads and rechecks. The persistent queue rotates
-# attempted orders to the back, including failures, so neither can block others.
+# Cap orders whose archive bodies are downloaded, not metadata-only checks.
+# Both deliverables share one slot; interrupted body transfers still count.
 MAX_DOWNLOADS_PER_RUN = 5
 
 # Only consider orders completed on/after this date, if set (env override).
@@ -244,6 +245,22 @@ class RetryableError(Exception):
     """A transient API error -- do not mark the order complete; retry next run."""
 
 
+class DownloadDeferred(Exception):
+    """The run's download budget is full; leave this order for a later run."""
+
+
+class DownloadBudget:
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.orders = set()
+
+    def claim(self, code: str) -> None:
+        if code not in self.orders:
+            if len(self.orders) >= self.limit:
+                raise DownloadDeferred()
+            self.orders.add(code)
+
+
 def _read_json(req: urllib.request.Request):
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -315,11 +332,14 @@ def ensure_free_space(path: Path, needed_bytes: int, margin: float = 1.05) -> No
 
 
 def download_to_scratch(
-    url: str, scratch_path: Path, min_free_bytes: int, previous=None
+    url: str, scratch_path: Path, min_free_bytes: int, previous=None,
+    before_download=None,
 ):
     """
     Conditional GET to scratch. Return byte count and validators, or None for
-    HTTP 304. Presigned URLs are neither stored nor compared: they expire.
+    HTTP 304. Invoke before_download only before reading an archive body; it
+    may raise DownloadDeferred to close the response without downloading it.
+    Presigned URLs are neither stored nor compared: they expire.
     """
     # Defence-in-depth: never let a link from the API send urllib to file://,
     # ftp://, data:, etc. (Don't log the URL -- presigned links carry secrets.)
@@ -358,6 +378,8 @@ def download_to_scratch(
                 expected if expected else min_free_bytes,
                 margin=1.05 if expected else 1.0,
             )
+            if before_download is not None:
+                before_download()
             with open(part, "wb") as fh:
                 while True:
                     chunk = resp.read(CHUNK_SIZE)
@@ -584,6 +606,7 @@ def process_item(
     min_free_bytes: int,
     dry_run: bool,
     recheck_days: int = 45,
+    budget=None,
 ) -> str:
     """Fetch new or changed deliverables; publish the manifest after all files."""
     code = item["code"]
@@ -603,10 +626,14 @@ def process_item(
         return "would-" + action
 
     item_dir.mkdir(parents=True, exist_ok=True)
-    # Persist the old inventory before doing any work. Failed refreshes remain
-    # eligible even after the watch window closes. Never move fetched_at forward.
-    if previous is not None and not retry:
-        write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
+    def begin_download():
+        if budget is not None:
+            budget.claim(code)
+        # A deferred or unchanged check must not create a retry journal: that
+        # would disable its validators next time and force needless downloads.
+        if previous is not None and not (item_dir / REFRESH_MARKER).exists():
+            write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
+
     fetched = dict(previous["files"]) if previous is not None else {}
     staged = []
     changed = False
@@ -622,12 +649,11 @@ def process_item(
             old = fetched.get(kind, {})
             destination = item_dir / kind
             members = old.get("members")
-            if members is None:
-                members = inventory_directory(destination)
-            validate_merge(destination, members)
+            if members is not None:
+                validate_merge(destination, members)
             # Missing local files must be recoverable even if remote bytes did
             # not change. Old manifests need a first unconditional download.
-            intact = "members" in old and all(
+            intact = members is not None and all(
                 (destination / name).is_file()
                 and (destination / name).stat().st_size == info["bytes"]
                 for name, info in members.items()
@@ -640,10 +666,16 @@ def process_item(
                 remote = download_to_scratch(
                     link, scratch_zip, min_free_bytes,
                     previous=old.get("remote") if intact and not retry else None,
+                    before_download=begin_download,
                 )
                 if remote is None:
                     log.info("  %s unchanged (HTTP 304)", kind)
                     continue
+                # Inventory old installations only once a download is admitted,
+                # not for every deferred order on a slow share.
+                if members is None:
+                    members = inventory_directory(destination)
+                validate_merge(destination, members)
                 stats = extract_zip(scratch_zip, staging, {} if retry else members, destination)
                 # Remote omission is not an instruction to delete earlier data.
                 merged = {**members, **stats["members"]}
@@ -687,7 +719,12 @@ def process_item(
         if previous is not None:
             return "updated" if changed else "unchanged"
         return "done" if fetched else "done-empty"
+    except DownloadDeferred:
+        log.info("  download budget full; deferring %s", code)
+        return "deferred"
     except (RetryableError, OSError, *NET_ERRORS) as exc:
+        if previous is not None and not (item_dir / REFRESH_MARKER).exists():
+            write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
         log.warning("  problem fetching %s: %s", code, exc)
         return "partial-error"
     finally:
@@ -898,22 +935,25 @@ def main() -> int:
         pending, rechecks = select_work(items, since, data_dir, recheck_days)
         queue = work_queue(pending, rechecks, data_dir)
         by_code = {item["code"]: item for item in pending + rechecks}
-        batch = [by_code[code] for code in queue[:MAX_DOWNLOADS_PER_RUN]]
+        batch = [by_code[code] for code in queue]
         if not batch:
             log.info("Nothing new to fetch (%d complete orders already on disk).", len(items))
             return 0
 
         log.info(
-            "%d new order(s) pending, %d recheck(s); handling %d this run: %s",
-            len(pending), len(rechecks), len(batch), ", ".join(i["code"] for i in batch),
+            "%d new order(s) pending, %d recheck(s); checking %d with a %d-order download limit",
+            len(pending), len(rechecks), len(batch), MAX_DOWNLOADS_PER_RUN,
         )
 
         summary = {}
+        budget = DownloadBudget(MAX_DOWNLOADS_PER_RUN)
+        deferred = []
         for item in batch:
             if not args.dry_run:
                 # Save before the attempt: failures and cancellation must not
                 # monopolize the first slots. Unattempted orders stay in front.
-                queue.append(queue.pop(0))
+                queue.remove(item["code"])
+                queue.append(item["code"])
                 write_manifest_atomic(data_dir / QUEUE_FILE, {"orders": queue})
             try:
                 status = process_item(
@@ -924,15 +964,20 @@ def main() -> int:
                     min_free_bytes,
                     args.dry_run,
                     recheck_days,
+                    budget=budget,
                 )
             except Exception as exc:  # never let one order kill the whole run
                 status = "error"
                 log.exception("Unexpected error on %s: %s", item.get("code"), exc)
+            if status == "deferred" and not args.dry_run:
+                deferred.append(item["code"])
+                queue = deferred + [code for code in queue if code not in deferred]
+                write_manifest_atomic(data_dir / QUEUE_FILE, {"orders": queue})
             summary[status] = summary.get(status, 0) + 1
 
         log.info("Run summary: %s", ", ".join(f"{k}={v}" for k, v in sorted(summary.items())))
-        if len(queue) > len(batch):
-            log.info("%d order(s) deferred to later runs.", len(queue) - len(batch))
+        log.info("Download slots used: %d/%d; %d order(s) deferred.",
+                 len(budget.orders), budget.limit, len(deferred))
         return 1 if summary.get("partial-error") or summary.get("error") else 0
 
     except (RetryableError, OSError, *NET_ERRORS) as exc:

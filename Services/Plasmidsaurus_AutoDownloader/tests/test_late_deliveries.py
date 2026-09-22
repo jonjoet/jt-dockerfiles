@@ -43,13 +43,15 @@ class LateDeliveryTests(PreservedTestCase):
     def link(self, token, code, kind):
         return 'https://example.test/' + kind if self.archives[kind] is not None else None
 
-    def download(self, url, path, min_free_bytes, previous=None):
+    def download(self, url, path, min_free_bytes, previous=None, before_download=None):
         kind = url.rsplit('/', 1)[1]
         self.requests.append((kind, previous))
         if self.fail == kind:
             raise fetch.RetryableError('simulated unavailable archive')
         if self.conditional and previous and previous.get('etag') == self.etags[kind]:
             return None
+        if before_download:
+            before_download()
         with zipfile.ZipFile(path, 'w') as zf:
             for name, body in self.archives[kind].items():
                 zf.writestr(name, body)
@@ -228,23 +230,68 @@ class LateDeliveryTests(PreservedTestCase):
         self.assertEqual(self.run_order(), 'partial-error')
         self.assertEqual(outside.read_bytes(), b'keep')
 
-    def test_main_caps_total_and_rotates_across_runs(self):
+    def test_main_downloads_five_new_orders_despite_unchanged_recheck(self):
         self.run_order()
         items = [{'code': 'NEW' + str(i), 'status': 'complete'} for i in range(7)]
         with mock.patch.dict(os.environ, {'PLASMIDSAURUS_CLIENT_ID': 'test', 'PLASMIDSAURUS_CLIENT_SECRET': 'test'}), \
              mock.patch.object(sys, 'argv', ['autofetch', '--data-dir', str(self.data), '--scratch-dir', str(self.scratch), '--recheck-days', '45']), \
              mock.patch.object(fetch, 'setup_logging'), \
              mock.patch.object(fetch, 'get_access_token', return_value='token'), \
-             mock.patch.object(fetch, 'get_items', return_value=items), \
-             mock.patch.object(fetch, 'process_item', return_value='done') as process:
+             mock.patch.object(fetch, 'get_items', return_value=items):
             self.assertEqual(fetch.main(), 0)
-            first = [call.args[0]['code'] for call in process.call_args_list]
-            process.reset_mock()
+            first = [i['code'] for i in items if (self.data / i['code'] / '.complete').exists()]
             self.assertEqual(fetch.main(), 0)
-            second = [call.args[0]['code'] for call in process.call_args_list]
-        self.assertEqual(first, ['NEW0', 'HYBRID', 'NEW1', 'NEW2', 'NEW3'])
-        self.assertEqual(second, ['NEW4', 'NEW5', 'NEW6', 'NEW0', 'HYBRID'])
+            second = [i['code'] for i in items if (self.data / i['code'] / '.complete').exists()]
+        self.assertEqual(first, ['NEW0', 'NEW1', 'NEW2', 'NEW3', 'NEW4'])
+        self.assertEqual(second, [i['code'] for i in items])
         self.assertFalse((self.data / '_autofetch.lock').exists())
+
+    def test_exhausted_budget_preserves_validators_and_checks_unchanged(self):
+        self.run_order()
+        budget = fetch.DownloadBudget(0)
+        self.assertEqual(self.run_order(budget=budget), 'unchanged')
+        original = (self.folder / '.complete').read_bytes()
+        self.add_illumina()
+        self.assertEqual(self.run_order(budget=budget), 'deferred')
+        self.assertEqual((self.folder / '.complete').read_bytes(), original)
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.assertFalse((self.folder / 'results/polished.fasta').exists())
+        self.assertEqual(self.run_order(budget=fetch.DownloadBudget(1)), 'updated')
+
+    def test_two_archives_share_one_download_slot(self):
+        budget = fetch.DownloadBudget(1)
+        self.assertEqual(self.run_order(budget=budget), 'done')
+        self.assertEqual(budget.orders, {'HYBRID'})
+        self.assertEqual(self.manifest()['files']['reads']['files'], 1)
+
+    def test_reads_only_update_deferred_after_unchanged_results(self):
+        self.run_order()
+        self.archives['reads']['illumina.fastq.gz'] = b'later'
+        self.etags['reads'] = 'reads-2'
+        original = (self.folder / '.complete').read_bytes()
+        self.assertEqual(self.run_order(budget=fetch.DownloadBudget(0)), 'deferred')
+        self.assertEqual((self.folder / '.complete').read_bytes(), original)
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.assertEqual(self.run_order(budget=fetch.DownloadBudget(1)), 'updated')
+        self.assertEqual((self.folder / 'reads/illumina.fastq.gz').read_bytes(), b'later')
+
+    def test_legacy_inventory_is_not_read_for_deferred_order(self):
+        self.run_order()
+        manifest = self.manifest()
+        for value in manifest['files'].values():
+            value.pop('members')
+        fetch.write_manifest_atomic(self.folder / '.complete', manifest)
+        with mock.patch.object(fetch, 'inventory_directory') as inventory:
+            self.assertEqual(self.run_order(budget=fetch.DownloadBudget(0)), 'deferred')
+            inventory.assert_not_called()
+        self.assertFalse((self.folder / '.refresh.json').exists())
+
+    def test_fallback_download_counts_even_when_members_match(self):
+        self.run_order()
+        self.conditional = False
+        budget = fetch.DownloadBudget(1)
+        self.assertEqual(self.run_order(budget=budget), 'unchanged')
+        self.assertEqual(budget.orders, {'HYBRID'})
 
     def test_bad_recheck_configuration_fails_before_api(self):
         for value in ('-1', '1.5', 'invalid', '1000000000'):
@@ -265,13 +312,31 @@ class LateDeliveryTests(PreservedTestCase):
 
 
 class DownloadTests(PreservedTestCase):
+    def test_budget_exhaustion_closes_response_without_reading_body(self):
+        response = io.BytesIO(b'archive')
+        response.headers = {'Content-Length': '7'}
+        budget = fetch.DownloadBudget(0)
+        path = self.root / 'archive.zip'
+        with mock.patch.object(fetch.urllib.request, 'urlopen', return_value=response), \
+             mock.patch.object(response, 'read', wraps=response.read) as read:
+            with self.assertRaises(fetch.DownloadDeferred):
+                fetch.download_to_scratch('https://example.test/data', path, 0,
+                                          before_download=lambda: budget.claim('ORDER'))
+            read.assert_not_called()
+        self.assertTrue(response.closed)
+        self.assertFalse(path.exists())
+        self.assertFalse((self.root / 'archive.zip.part').exists())
+
     def test_conditional_get_304_does_not_write_or_read_body(self):
         path = self.root / 'archive.zip'
         error = urllib.error.HTTPError('https://example.test/new-signature', 304, 'Not Modified', {}, None)
+        before_download = mock.Mock()
         with mock.patch.object(fetch.urllib.request, 'urlopen', side_effect=error) as urlopen:
             result = fetch.download_to_scratch('https://example.test/new-signature', path, 0,
-                                               {'etag': '"version1"', 'last_modified': 'old'})
+                                               {'etag': '"version1"', 'last_modified': 'old'},
+                                               before_download=before_download)
         self.assertIsNone(result)
+        before_download.assert_not_called()
         self.assertEqual(urlopen.call_args[0][0].get_header('If-none-match'), '"version1"')
         self.assertIsNone(urlopen.call_args[0][0].get_header('If-modified-since'))
         self.assertEqual(list(self.root.iterdir()), [])
@@ -291,9 +356,12 @@ class DownloadTests(PreservedTestCase):
         response = io.BytesIO(b'short')
         response.headers = {'Content-Length': '100'}
         path = self.root / 'zip'
+        budget = fetch.DownloadBudget(1)
         with mock.patch.object(fetch.urllib.request, 'urlopen', return_value=response):
             with self.assertRaises(fetch.RetryableError):
-                fetch.download_to_scratch('https://example.test/data', path, 0)
+                fetch.download_to_scratch('https://example.test/data', path, 0,
+                                          before_download=lambda: budget.claim('ORDER'))
+        self.assertEqual(budget.orders, {'ORDER'})
         self.assertFalse(path.exists())
         self.assertFalse((self.root / 'zip.part').exists())
 
