@@ -321,6 +321,20 @@ The default is a starting point, **not a verified provider quota**; increase
 it if live runs still encounter throttling. Reducing the download-order limit
 does not limit the number of unchanged-order checks.
 
+Allow for watch-list size when choosing the timer schedule. With both results
+and reads available, each unchanged order needs two paced API calls: at the
+default interval, roughly four seconds per order, or seven minutes for 100
+orders and fifteen minutes for 225. These are pacing estimates, not runtime
+limits; filesystem work, network latency, downloads and retry waits can make
+runs longer. Check the VM's effective service start timeout rather than assuming
+the default:
+
+```bash
+systemctl show plasmidsaurus-autofetch.service -p TimeoutStartUSec
+```
+
+Compare this timeout and the timer interval with observed full-run durations.
+
 Both API requests and archive GETs handle HTTP **429 (Too Many Requests)**:
 
 - Retry the same request up to three times after the initial attempt, honoring
@@ -637,6 +651,7 @@ sudo userdel <<SERVICE_USER>>
 | Late files are missing from an old order | Check the original `fetched_at` and increase `PLASMIDSAURUS_RECHECK_DAYS`. Watch age is download age, not API completion age. |
 | Every recheck downloads large ZIPs | The server may not supply or honor validators; compare the manifest's `remote` fields and logs for `HTTP 304`. Reduce timer frequency if needed. |
 | HTTP 429 / `Rate-limit cooldown active` | Requests are being throttled. The service retries with bounded waits, then stops and honors the saved cooldown on later runs. Avoid repeated manual restarts; increase `PLASMIDSAURUS_API_INTERVAL` if throttling persists. Lowering the download cap does not cap unchanged checks. |
+| `invalid rate-limit cooldown file: <path>` | Stop the timer and service, then rename the reported file to a unique backup name for inspection. This leaves downloaded data and the order queue intact, but removes the remembered throttle deadline. Wait out any known outstanding server `Retry-After` before manually running the service and restarting the timer. Do not remove a valid active cooldown to bypass throttling. |
 | Timer never fires | `systemctl list-timers`; check `OnCalendar` with `systemd-analyze calendar`. |
 | Runs but fetches nothing | Normal if everything complete is already on disk (see the log line). |
 

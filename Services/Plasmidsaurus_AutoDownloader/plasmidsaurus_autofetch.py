@@ -1076,7 +1076,7 @@ def main() -> int:
                 if not math.isfinite(retry_at):
                     raise ValueError("non-finite retry_at")
             except (ValueError, TypeError, KeyError) as exc:
-                raise RetryableError("invalid rate-limit cooldown file") from exc
+                raise RetryableError(f"invalid rate-limit cooldown file: {cooldown_path.absolute()}") from exc
             if time.time() < retry_at:
                 log.warning("Rate-limit cooldown active for another %.1f seconds; no requests made",
                             retry_at - time.time())

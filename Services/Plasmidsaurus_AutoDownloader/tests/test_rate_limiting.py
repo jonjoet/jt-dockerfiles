@@ -229,9 +229,12 @@ class RateLimitingTests(PreservedTestCase):
         for value in ('bad', '[]', '{"retry_at": "nan"}'):
             with self.subTest(value=value):
                 (self.root / fetch.COOLDOWN_FILE).write_text(value)
-                status, token, _ = self.run_main([], lambda *args: None)
+                with self.assertLogs(fetch.log, level='ERROR') as logs:
+                    status, token, _ = self.run_main([], lambda *args: None)
                 self.assertEqual(status, 1)
                 token.assert_not_called()
+                self.assertIn(f'invalid rate-limit cooldown file: {self.root / fetch.COOLDOWN_FILE}',
+                              '\n'.join(logs.output))
 
     def test_interval_configuration_validation_and_cli_override(self):
         for value in ('-1', '61', 'nan', 'inf', 'invalid', ''):
