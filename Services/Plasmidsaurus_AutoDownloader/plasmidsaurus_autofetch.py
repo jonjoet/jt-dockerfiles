@@ -844,7 +844,7 @@ def select_pending(items: list, since):
 
 
 def select_work(items: list, since, data_dir: Path, recheck_days: int):
-    """New orders obey SINCE; local recent downloads are watched independently."""
+    """Return new orders, rechecks and codes whose manifests could not be read."""
     pending = [
         item for item in select_pending(items, since)
         if not any((data_dir / item["code"] / name).exists()
@@ -852,6 +852,7 @@ def select_work(items: list, since, data_dir: Path, recheck_days: int):
     ]
     by_code = {i["code"]: i for i in items if _usable_code(i.get("code"))}
     rechecks = []
+    manifest_errors = []
     for folder in sorted(data_dir.iterdir()):
         if folder.is_symlink() or not folder.is_dir():
             continue
@@ -869,8 +870,9 @@ def select_work(items: list, since, data_dir: Path, recheck_days: int):
                     **manifest.get("order", {}), "code": folder.name,
                 }))
         except RetryableError as exc:
-            log.warning("Skipping %s: %s", folder.name, exc)
-    return pending, rechecks
+            log.error("Skipping %s: %s", folder.name, exc)
+            manifest_errors.append(folder.name)
+    return pending, rechecks, manifest_errors
 
 
 def work_queue(pending: list, rechecks: list, data_dir: Path) -> list:
@@ -989,11 +991,11 @@ def main() -> int:
 
         token = get_access_token(client_id, client_secret)
         items = get_items(token)
-        pending, rechecks = select_work(items, since, data_dir, recheck_days)
+        pending, rechecks, manifest_errors = select_work(items, since, data_dir, recheck_days)
         queue = work_queue(pending, rechecks, data_dir)
         by_code = {item["code"]: item for item in pending + rechecks}
         batch = [by_code[code] for code in queue]
-        if not batch:
+        if not batch and not manifest_errors:
             log.info("Nothing new to fetch (%d complete orders already on disk).", len(items))
             return 0
 
@@ -1002,7 +1004,7 @@ def main() -> int:
             len(pending), len(rechecks), len(batch), max_downloads,
         )
 
-        summary = {}
+        summary = {"manifest-error": len(manifest_errors)} if manifest_errors else {}
         budget = DownloadBudget(max_downloads)
         deferred = []
         for item in batch:
@@ -1035,7 +1037,7 @@ def main() -> int:
         log.info("Run summary: %s", ", ".join(f"{k}={v}" for k, v in sorted(summary.items())))
         log.info("Download slots used: %d/%d; %d order(s) deferred.",
                  len(budget.orders), budget.limit, len(deferred))
-        return 1 if summary.get("partial-error") or summary.get("error") else 0
+        return 1 if manifest_errors or summary.get("partial-error") or summary.get("error") else 0
 
     except (RetryableError, OSError, *NET_ERRORS) as exc:
         log.error("Run failed, will retry next run: %s", exc)

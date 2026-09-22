@@ -67,7 +67,7 @@ class IgnoredOrderTests(PreservedTestCase):
                     # Restrict the scan to this order; every state must bypass
                     # manifest reads as well as the per-order network paths.
                     with mock.patch.object(Path, 'iterdir', return_value=iter([self.folder])):
-                        self.assertEqual(fetch.select_work([item], None, self.data, 45), ([], []))
+                        self.assertEqual(fetch.select_work([item], None, self.data, 45), ([], [], []))
                     for dry_run in (False, True):
                         self.assertEqual(fetch.process_item(
                             item, 'token', self.data, self.scratch, 0, dry_run,
@@ -83,24 +83,24 @@ class IgnoredOrderTests(PreservedTestCase):
     def test_removing_marker_restores_normal_window_and_recovery_rules(self):
         marker = self.folder / '.ignore'
         marker.touch()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [], []))
         marker.unlink()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([self.item], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([self.item], [], []))
         complete = self.folder / '.complete'
         complete.write_text(self.manifest())
         marker.touch()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [], []))
         marker.unlink()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [self.item]))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [self.item], []))
         complete.write_text(self.manifest(60))
         marker.touch()
         marker.unlink()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [], []))
         complete.rename(self.folder / '.refresh.json')
         marker.touch()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 0), ([], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 0), ([], [], []))
         marker.unlink()
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 0), ([], [self.item]))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 0), ([], [self.item], []))
 
     def test_queued_ignored_order_does_not_fail_run_or_block_other_orders(self):
         (self.folder / '.ignore').touch()

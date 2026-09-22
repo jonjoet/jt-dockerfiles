@@ -258,18 +258,19 @@ class LateDeliveryTests(PreservedTestCase):
         self.run_order()
         since = datetime.now(timezone.utc)
         new = {'code': 'NEW', 'status': 'complete'}
-        pending, recent = fetch.select_work([self.item, new, new], since, self.data, 45)
+        pending, recent, errors = fetch.select_work([self.item, new, new], since, self.data, 45)
         self.assertEqual(pending, [new])
         self.assertEqual(recent, [self.item])
+        self.assertEqual(errors, [])
         # The local watch list survives omission from /items or status changes.
         self.assertEqual(fetch.select_work([], since, self.data, 45)[1][0]['code'], 'HYBRID')
         processing = dict(self.item, status='processing')
         self.assertEqual(fetch.select_work([processing], since, self.data, 45)[1], [processing])
-        self.assertEqual(fetch.select_work([self.item], since, self.data, 0), ([], []))
+        self.assertEqual(fetch.select_work([self.item], since, self.data, 0), ([], [], []))
         old = self.manifest()
         old['fetched_at'] = (since - timedelta(days=46)).isoformat()
         fetch.write_manifest_atomic(self.folder / '.complete', old)
-        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], []))
+        self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [], []))
         self.assertEqual(fetch.select_work([self.item], None, self.data, 60)[1], [self.item])
         self.assertEqual(self.run_order(), 'skip-done')
         fetch.write_manifest_atomic(self.folder / '.refresh.json', old)
@@ -390,9 +391,10 @@ class LateDeliveryTests(PreservedTestCase):
     def test_legacy_and_malformed_markers_are_not_overwritten(self):
         self.folder.mkdir()
         marker = self.folder / '.complete'
-        for contents in ('not json', json.dumps({'files': {}, 'fetched_at': datetime.now(timezone.utc).isoformat()})):
+        for contents, errors in [('not json', ['HYBRID']),
+                                 (json.dumps({'files': {}, 'fetched_at': datetime.now(timezone.utc).isoformat()}), [])]:
             marker.write_text(contents)
-            self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], []))
+            self.assertEqual(fetch.select_work([self.item], None, self.data, 45), ([], [], errors))
             self.assertEqual(marker.read_text(), contents)
 
 

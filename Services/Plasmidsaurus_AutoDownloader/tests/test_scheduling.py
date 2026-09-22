@@ -45,7 +45,7 @@ class SchedulingTests(PreservedTestCase):
              mock.patch.object(fetch, 'setup_logging'), \
              mock.patch.object(fetch, 'get_access_token', return_value='token'), \
              mock.patch.object(fetch, 'get_items', return_value=[]), \
-             mock.patch.object(fetch, 'select_work', return_value=(self.pending, self.rechecks)), \
+             mock.patch.object(fetch, 'select_work', return_value=(self.pending, self.rechecks, [])), \
              mock.patch.object(fetch, 'process_item', side_effect=record):
             if env_limit is None:
                 os.environ.pop('PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN', None)

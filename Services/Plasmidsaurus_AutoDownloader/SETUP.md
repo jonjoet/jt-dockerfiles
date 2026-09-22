@@ -344,6 +344,12 @@ leaves no `.complete` and is retried using `.refresh.json`. Do not delete that
 journal to clear an error. A failed order makes the service exit nonzero while
 other orders still get processed.
 
+An unreadable or invalid `.complete` (or `.refresh.json` when `.complete` is
+absent) also makes the run exit nonzero, including dry runs. The affected order
+is left untouched, other eligible orders continue, and the summary reports
+`manifest-error`. A corrupt `.complete` does not trigger fallback to an older
+journal. An order with `.ignore` is excluded from these checks and errors.
+
 Remote archival is separate from an update. When a previously downloaded
 archive returns HTTP 404/410 during an ordinary recheck, the service logs that
 it is no longer available remotely, retains its local files and inventory, and
@@ -429,8 +435,9 @@ automatically on their first recheck: the script inventories local files once
 and downloads the current archives to establish remote validators. Matching
 local files are not rewritten. Older downloads outside the window stay as-is;
 increase the window to catch a known missed delivery. Legacy ZIP-only orders
-still require section 12's migration. Invalid manifests or missing download
-dates produce warnings and are left for inspection rather than overwritten.
+still require section 12's migration. Invalid manifests produce errors and a
+nonzero run status; missing download dates produce warnings. Both are left
+for inspection rather than overwritten.
 
 ---
 
