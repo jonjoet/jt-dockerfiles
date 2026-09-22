@@ -50,7 +50,7 @@ Long-running or scheduled background jobs, meant to run unattended on a VM (e.g.
 
 | Service | Description |
 |---------|-------------|
-| [Plasmidsaurus_AutoDownloader](Services/Plasmidsaurus_AutoDownloader/) | Stdlib-only Python script that auto-downloads finished Plasmidsaurus sequencing orders to a mounted share on a schedule (see [SETUP.md](Services/Plasmidsaurus_AutoDownloader/SETUP.md)) |
+| [Plasmidsaurus_AutoDownloader](Services/Plasmidsaurus_AutoDownloader/) | Stdlib-only scheduled downloader for Plasmidsaurus orders, with configurable rechecks for late hybrid reads and polished assemblies (see [SETUP.md](Services/Plasmidsaurus_AutoDownloader/SETUP.md)) |
 
 ## Standalone HTML
 

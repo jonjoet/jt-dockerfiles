@@ -1,13 +1,12 @@
 import gzip
 import json
-import shutil
 import sys
-import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from support import PreservedTestCase
 
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
@@ -17,22 +16,7 @@ import migrate_legacy_zips as migrate  # noqa: E402
 import plasmidsaurus_autofetch as autofetch  # noqa: E402
 
 
-class ArchiveLayoutTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.test_tmp_root = Path(__file__).parent / ".tmp"
-        cls.test_tmp_root.mkdir(exist_ok=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.test_tmp_root, ignore_errors=True)
-
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory(dir=self.test_tmp_root)
-        self.root = Path(self.temp_dir.name)
-
-    def tearDown(self):
-        self.temp_dir.cleanup()
+class ArchiveLayoutTests(PreservedTestCase):
 
     def test_extract_preserves_inner_gzip_bytes(self):
         fastq_gz = gzip.compress(b"@read1\nACGT\n+\n!!!!\n")
@@ -47,7 +31,9 @@ class ArchiveLayoutTests(unittest.TestCase):
         extracted = (staging / "sample.fastq.gz").read_bytes()
         self.assertEqual(extracted, fastq_gz)
         self.assertEqual(gzip.decompress(extracted), b"@read1\nACGT\n+\n!!!!\n")
-        self.assertEqual(stats, {"files": 1, "bytes": len(fastq_gz)})
+        self.assertEqual(stats["files"], 1)
+        self.assertEqual(stats["bytes"], len(fastq_gz))
+        self.assertIn("sample.fastq.gz", stats["members"])
 
     def test_extract_rejects_traversal_and_removes_staging(self):
         archive = self.root / "unsafe.zip"
@@ -87,7 +73,7 @@ class ArchiveLayoutTests(unittest.TestCase):
         scratch_dir.mkdir()
         fastq_gz = gzip.compress(b"@read1\nACGT\n+\n!!!!\n")
 
-        def fake_download(url, scratch_path, min_free_bytes):
+        def fake_download(url, scratch_path, min_free_bytes, previous=None):
             with zipfile.ZipFile(scratch_path, "w") as zf:
                 if "results" in scratch_path.name:
                     zf.writestr("report.txt", b"complete\n")
@@ -97,7 +83,7 @@ class ArchiveLayoutTests(unittest.TestCase):
                         fastq_gz,
                         compress_type=zipfile.ZIP_STORED,
                     )
-            return scratch_path.stat().st_size
+            return {"archive_bytes": scratch_path.stat().st_size}
 
         fetch_patch = mock.patch.object(
             autofetch,
@@ -139,9 +125,9 @@ class ArchiveLayoutTests(unittest.TestCase):
         data_dir.mkdir()
         scratch_dir.mkdir()
 
-        def fake_download(url, scratch_path, min_free_bytes):
+        def fake_download(url, scratch_path, min_free_bytes, previous=None):
             scratch_path.write_bytes(b"not a zip")
-            return scratch_path.stat().st_size
+            return {"archive_bytes": scratch_path.stat().st_size}
 
         fetch_patch = mock.patch.object(
             autofetch,

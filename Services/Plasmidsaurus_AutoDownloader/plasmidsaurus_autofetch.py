@@ -16,10 +16,10 @@ WHAT THIS IS
         <item_code>/reads/        raw reads (the *.fastq.gz members stay gzipped)
         <item_code>/.complete     marker + manifest, written LAST
 
-    Each deliverable zip is buffered on fast local scratch, extracted straight
-    to a hidden staging folder on the share, and exposed with a same-share
-    rename. The zip never touches the share and extracted file data is written
-    there only once. pod5 (raw signal) is intentionally not fetched.
+    Each deliverable zip is buffered on fast local scratch. New/changed members
+    are extracted to hidden staging folders on the share and published with
+    same-share renames. The zip never touches the share; unchanged files are
+    not rewritten. pod5 (raw signal) is intentionally not fetched.
 
 WHY IT EXISTS / WHO SET IT UP
     Stopgap set up by <YOUR NAME / TEAM> on <DATE SET UP> so results land
@@ -30,8 +30,8 @@ WHY IT EXISTS / WHO SET IT UP
 HOW IT RUNS
     Invoked on a schedule by a systemd timer (plasmidsaurus-autofetch.timer),
     as a dedicated unprivileged user. See the setup guide for the install.
-    Each run handles at most MAX_DOWNLOADS_PER_RUN orders (to stay
-    friendly with the API); anything still pending is picked up next run.
+    Each run handles at most MAX_DOWNLOADS_PER_RUN new orders, plus rechecks
+    every locally downloaded order in the watch window for late deliverables.
     It can also be run by hand for testing -- see the bottom of this header.
 
 HOW TO DISABLE
@@ -53,15 +53,21 @@ CONFIG (environment variables; supplied by the systemd unit's EnvironmentFile)
     PLASMIDSAURUS_SINCE           (optional)  YYYY-MM-DD. Only fetch orders
                                   completed on/after this date. Leave unset to
                                   backfill the whole order history (a few/run).
+    PLASMIDSAURUS_RECHECK_DAYS     (optional) days after first successful download
+                                  to watch for added/changed files (default 45;
+                                  0 disables new rechecks). SINCE applies only
+                                  to new orders, not this local watch list.
 
 DEPENDENCIES
     Python 3.8+ standard library only. No pip packages, no virtualenv.
 
 SAFE TO RE-RUN
-    Idempotent. An order counts as "done" only once its `.complete` marker is
-    written, which happens after every available file has fully downloaded. A
-    partial/interrupted download leaves no marker and is retried next run, so
-    you never get a half-downloaded zip masquerading as finished. Run by hand:
+    `.complete` describes the latest fully downloaded snapshot, not a promise
+    that Plasmidsaurus will never add files. It records member paths, sizes and
+    CRC32s, HTTP validators, the original fetched_at, and last_checked_at.
+    Refresh failures retain a .refresh.json journal for retry (even after the
+    watch window). The old .complete stays valid until publication begins;
+    it is removed during publication and rewritten last. Run by hand:
         python3 plasmidsaurus_autofetch.py            # one normal pass
         python3 plasmidsaurus_autofetch.py --dry-run  # list what it WOULD fetch
 
@@ -87,7 +93,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+import zlib
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -123,17 +130,19 @@ MAX_DOWNLOADS_PER_RUN = 5
 
 # Only consider orders completed on/after this date, if set (env override).
 _since_env = os.getenv("PLASMIDSAURUS_SINCE")
+_recheck_days_env = os.getenv("PLASMIDSAURUS_RECHECK_DAYS", "45")
 
 # Per-socket-operation timeout (seconds) and streaming chunk size.
 HTTP_TIMEOUT = 120
 CHUNK_SIZE = 1 << 20  # 1 MiB
 
-USER_AGENT = "plasmidsaurus-autofetch/2.0 (stdlib)"
+USER_AGENT = "plasmidsaurus-autofetch/2.1 (stdlib)"
 
 # A run older than this is assumed crashed and its lock is reclaimed.
 STALE_LOCK_AFTER = 6 * 3600
 
 COMPLETE_MARKER = ".complete"
+REFRESH_MARKER = ".refresh.json"
 LAYOUT_VERSION = 2
 MAX_ZIP_MEMBERS = 100_000
 
@@ -279,12 +288,12 @@ def fetch_link(token: str, code: str, kind: str):
     """
     Return the presigned download URL for one deliverable, or None if the order
     simply has no file of that kind (e.g. custom projects have no 'results').
-    Raise RetryableError for rate-limiting / server errors so it is retried.
+    Only 404/410 mean absent; authentication/rate-limit/server errors retry.
     """
     try:
         payload = _api_get(token, f"/api/item/{code}/{kind}")
     except urllib.error.HTTPError as exc:
-        if exc.code == 429 or exc.code >= 500:
+        if exc.code not in (404, 410):
             raise RetryableError(f"{kind} for {code}: HTTP {exc.code}")
         log.info("  no %s available for %s (HTTP %s)", kind, code, exc.code)
         return None
@@ -305,11 +314,11 @@ def ensure_free_space(path: Path, needed_bytes: int, margin: float = 1.05) -> No
 
 
 def download_to_scratch(
-    url: str, scratch_path: Path, min_free_bytes: int
-) -> int:
+    url: str, scratch_path: Path, min_free_bytes: int, previous=None
+):
     """
-    Stream a URL to local scratch via a temporary .part file. Returns bytes
-    written and verifies Content-Length when supplied.
+    Conditional GET to scratch. Return byte count and validators, or None for
+    HTTP 304. Presigned URLs are neither stored nor compared: they expire.
     """
     # Defence-in-depth: never let a link from the API send urllib to file://,
     # ftp://, data:, etc. (Don't log the URL -- presigned links carry secrets.)
@@ -319,9 +328,19 @@ def download_to_scratch(
     part = scratch_path.with_suffix(scratch_path.suffix + ".part")
     part.unlink(missing_ok=True)
     written = 0
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    headers = {"User-Agent": USER_AGENT}
+    previous = previous or {}
+    if previous.get("etag"):
+        headers["If-None-Match"] = previous["etag"]
+    elif previous.get("last_modified"):
+        headers["If-Modified-Since"] = previous["last_modified"]
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            metadata = {
+                "etag": resp.headers.get("ETag"),
+                "last_modified": resp.headers.get("Last-Modified"),
+            }
             raw_length = resp.headers.get("Content-Length")
             try:
                 expected = int(raw_length) if raw_length else 0
@@ -349,7 +368,12 @@ def download_to_scratch(
                 f"{scratch_path.name}: incomplete download ({written}/{expected} bytes)"
             )
         os.replace(part, scratch_path)
-        return written
+        return {"archive_bytes": written, **metadata}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304 and len(headers) > 1:
+            return None
+        # HTTPError.__str__ omits the signed URL, unlike some transport errors.
+        raise RetryableError(f"download HTTP {exc.code}") from exc
     except NET_ERRORS:
         raise
     except OSError as exc:
@@ -410,10 +434,11 @@ def _validated_zip_members(zf: zipfile.ZipFile):
     return validated
 
 
-def extract_zip(scratch_zip: Path, staging_dir: Path) -> dict:
+def extract_zip(scratch_zip: Path, staging_dir: Path, previous=None, destination=None) -> dict:
     """
     Validate and extract one local zip directly into a staging directory on the
-    share. Reading every member to EOF also verifies its ZIP CRC.
+    share, skipping unchanged members. Reading each extracted member to EOF
+    also verifies its ZIP CRC; CRC32 is change detection, not a security hash.
     """
     _remove_path(staging_dir)
     try:
@@ -424,19 +449,29 @@ def extract_zip(scratch_zip: Path, staging_dir: Path) -> dict:
                 for info, relative in members
                 if not info.is_dir()
             ]
+            inventory = {
+                relative.as_posix(): {"bytes": info.file_size, "crc32": info.CRC}
+                for info, relative in file_members
+            }
+            previous = previous or {}
+            changed = [
+                (info, relative) for info, relative in file_members
+                if previous.get(relative.as_posix()) != inventory[relative.as_posix()]
+                or destination is None
+                or not (destination / relative).is_file()
+                or (destination / relative).stat().st_size != info.file_size
+            ]
             total_bytes = sum(info.file_size for info, _ in file_members)
-            ensure_free_space(staging_dir.parent, total_bytes)
+            ensure_free_space(staging_dir.parent, sum(info.file_size for info, _ in changed))
             staging_dir.mkdir(parents=True)
 
-            for info, relative in members:
+            for info, relative in changed:
                 output = staging_dir / relative
-                if info.is_dir():
-                    output.mkdir(parents=True, exist_ok=True)
-                    continue
                 output.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as source, open(output, "xb") as destination:
-                    shutil.copyfileobj(source, destination, length=CHUNK_SIZE)
-        return {"files": len(file_members), "bytes": total_bytes}
+                with zf.open(info) as source, open(output, "xb") as target:
+                    shutil.copyfileobj(source, target, length=CHUNK_SIZE)
+        return {"files": len(file_members), "bytes": total_bytes,
+                "members": inventory, "written": len(changed)}
     except RetryableError:
         try:
             _remove_path(staging_dir)
@@ -469,6 +504,77 @@ def write_manifest_atomic(path: Path, manifest: dict) -> None:
 # Per-order processing
 # ----------------------------------------------------------------------------
 
+def load_manifest(item_dir: Path):
+    """Use the pre-refresh snapshot after an interruption, even without .complete."""
+    path = item_dir / REFRESH_MARKER
+    if not path.exists():
+        path = item_dir / COMPLETE_MARKER
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise RetryableError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("files"), dict):
+        raise RetryableError(f"invalid manifest at {path}")
+    return value
+
+
+def within_recheck_window(manifest: dict, days: int, now=None) -> bool:
+    # Never slide this window forward when late files arrive.
+    fetched = _parse_done(manifest.get("fetched_at"))
+    if fetched is None:
+        log.warning("Cannot recheck %s: missing/invalid fetched_at in manifest.",
+                    manifest.get("item_code", "order"))
+        return False
+    return days > 0 and (now or datetime.now(timezone.utc)) - fetched <= timedelta(days=days)
+
+
+def inventory_directory(directory: Path) -> dict:
+    """One-time inventory for older layout-2 manifests without member records."""
+    inventory = {}
+    if directory.is_symlink():
+        raise RetryableError(f"refusing symlink directory {directory}")
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise RetryableError(f"refusing symlink {path}")
+        if path.is_file():
+            crc, size = 0, 0
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(CHUNK_SIZE), b""):
+                    crc = zlib.crc32(chunk, crc)
+                    size += len(chunk)
+            inventory[path.relative_to(directory).as_posix()] = {"bytes": size, "crc32": crc}
+    return inventory
+
+
+def validate_merge(destination: Path, inventory: dict) -> None:
+    """Reject symlinks, file/directory conflicts and case collisions before writes."""
+    paths = {}
+    for name in inventory:
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RetryableError(f"unsafe inventory path {name!r}")
+        for part in (relative, *relative.parents):
+            key = unicodedata.normalize("NFC", part.as_posix()).casefold()
+            if key in paths and paths[key] != part:
+                raise RetryableError(f"colliding file paths at {name!r}")
+            paths[key] = part
+        if any(parent.as_posix() in inventory for parent in relative.parents):
+            raise RetryableError(f"file/directory conflict at {name!r}")
+        target = destination / relative
+        for path in (target, *target.parents):
+            if path.is_symlink():
+                raise RetryableError(f"refusing symlink {path}")
+            if path == destination.parent:
+                break
+        if target.exists() and not target.is_file():
+            raise RetryableError(f"not a regular file: {target}")
+        if any(path.exists() and not path.is_dir()
+               for path in (destination, *(destination / p for p in relative.parents))):
+            raise RetryableError(f"not a directory above {target}")
+
+
 def process_item(
     item: dict,
     token: str,
@@ -476,83 +582,119 @@ def process_item(
     scratch_dir: Path,
     min_free_bytes: int,
     dry_run: bool,
+    recheck_days: int = 45,
 ) -> str:
-    """
-    Download every available deliverable for one order into its own folder, then
-    write the .complete marker. Returns a short status string for the run summary.
-    """
+    """Fetch new or changed deliverables; publish the manifest after all files."""
     code = item["code"]
     item_dir = data_dir / code
-
-    if (item_dir / COMPLETE_MARKER).exists():
-        return "skip-done"
+    previous = load_manifest(item_dir)
+    retry = (item_dir / REFRESH_MARKER).exists()
+    if previous is not None:
+        if previous.get("layout_version") != LAYOUT_VERSION:
+            log.warning("%s needs migrate_legacy_zips.py before rechecking.", code)
+            return "skip-legacy"
+        if not retry and not within_recheck_window(previous, recheck_days):
+            return "skip-done"
 
     if dry_run:
-        log.info("[dry-run] would fetch %s (%s)", code, item.get("product_name", "?"))
-        return "would-fetch"
+        action = "recheck" if previous is not None else "fetch"
+        log.info("[dry-run] would %s %s (%s)", action, code, item.get("product_name", "?"))
+        return "would-" + action
 
     item_dir.mkdir(parents=True, exist_ok=True)
-    fetched, errors = {}, []
-
-    for kind in DATA_TYPES:
-        work_dir = None
-        try:
+    # Persist the old inventory before doing any work. Failed refreshes remain
+    # eligible even after the watch window closes. Never move fetched_at forward.
+    if previous is not None and not retry:
+        write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
+    fetched = dict(previous["files"]) if previous is not None else {}
+    staged = []
+    changed = False
+    try:
+        for kind in DATA_TYPES:
+            staging = item_dir / f".{kind}.partial"
+            _remove_path(staging)
             link = fetch_link(token, code, kind)
             if not link:
-                _remove_path(item_dir / kind)
+                if kind in fetched:
+                    raise RetryableError(f"previously downloaded {kind} is unavailable")
                 continue
-            work_dir = Path(
-                tempfile.mkdtemp(prefix=f"plasmidsaurus-{code}-{kind}-", dir=scratch_dir)
-            )
-            scratch_zip = work_dir / f"{code}_{kind}.zip"
-            log.info("  downloading %s to local scratch ...", scratch_zip.name)
-            archive_bytes = download_to_scratch(
-                link, scratch_zip, min_free_bytes=min_free_bytes
-            )
-
-            staging = item_dir / f".{kind}.partial"
+            old = fetched.get(kind, {})
             destination = item_dir / kind
-            # A marker-less order has no committed output. Removing an earlier
-            # attempt first avoids needing space for two extracted copies.
-            _remove_path(destination)
-            stats = extract_zip(scratch_zip, staging)
-            os.replace(staging, destination)
-            fetched[kind] = {
-                "directory": kind,
-                "files": stats["files"],
-                "bytes": stats["bytes"],
-                "archive_bytes": archive_bytes,
-            }
-            log.info(
-                "  extracted %s (%d files, %d bytes)",
-                destination,
-                stats["files"],
-                stats["bytes"],
+            members = old.get("members")
+            if members is None:
+                members = inventory_directory(destination)
+            validate_merge(destination, members)
+            # Missing local files must be recoverable even if remote bytes did
+            # not change. Old manifests need a first unconditional download.
+            intact = "members" in old and all(
+                (destination / name).is_file()
+                and (destination / name).stat().st_size == info["bytes"]
+                for name, info in members.items()
             )
-        except (RetryableError, OSError, *NET_ERRORS) as exc:
-            errors.append(f"{kind}: {exc}")
-            log.warning("  problem fetching %s for %s: %s", kind, code, exc)
+            with tempfile.TemporaryDirectory(
+                prefix=f"plasmidsaurus-{code}-{kind}-", dir=scratch_dir
+            ) as work:
+                scratch_zip = Path(work) / f"{code}_{kind}.zip"
+                log.info("  checking %s for %s ...", kind, code)
+                remote = download_to_scratch(
+                    link, scratch_zip, min_free_bytes,
+                    previous=old.get("remote") if intact and not retry else None,
+                )
+                if remote is None:
+                    log.info("  %s unchanged (HTTP 304)", kind)
+                    continue
+                stats = extract_zip(scratch_zip, staging, {} if retry else members, destination)
+                # Remote omission is not an instruction to delete earlier data.
+                merged = {**members, **stats["members"]}
+                validate_merge(destination, merged)
+                staged.append((staging, destination))
+                fetched[kind] = {
+                    "directory": kind,
+                    "files": len(merged),
+                    "bytes": sum(info["bytes"] for info in merged.values()),
+                    "archive_bytes": remote["archive_bytes"],
+                    "remote": remote,
+                    "members": merged,
+                }
+                changed = changed or stats["written"] > 0 or kind not in (previous or {}).get("files", {})
+                log.info("  staged %d new/changed %s files", stats["written"], kind)
+
+        # All downloads/extractions passed. During publication the order is
+        # marker-less, so consumers cannot mistake a partial refresh for success.
+        if staged:
+            (item_dir / COMPLETE_MARKER).unlink(missing_ok=True)
+        for staging, destination in staged:
+            destination.mkdir(exist_ok=True)
+            for source in sorted(staging.rglob("*")):
+                if source.is_file():
+                    target = destination / source.relative_to(staging)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, target)
+        now = datetime.now(timezone.utc).isoformat()
+        manifest = dict(previous or {})
+        manifest.update({
+            "layout_version": LAYOUT_VERSION,
+            "item_code": code,
+            "fetched_at": previous["fetched_at"] if previous is not None else now,
+            "last_checked_at": now,
+            "updated_at": now if changed else manifest.get("updated_at", now),
+            "order": {k: item.get(k) for k in ("product_name", "done_date", "quantity", "status")},
+            "files": fetched,
+        })
+        write_manifest_atomic(item_dir / COMPLETE_MARKER, manifest)
+        (item_dir / REFRESH_MARKER).unlink(missing_ok=True)
+        if previous is not None:
+            return "updated" if changed else "unchanged"
+        return "done" if fetched else "done-empty"
+    except (RetryableError, OSError, *NET_ERRORS) as exc:
+        log.warning("  problem fetching %s: %s", code, exc)
+        return "partial-error"
+    finally:
+        for kind in DATA_TYPES:
             try:
                 _remove_path(item_dir / f".{kind}.partial")
             except OSError:
                 pass
-        finally:
-            if work_dir is not None:
-                shutil.rmtree(work_dir, ignore_errors=True)
-
-    if errors:
-        # Leave the folder marker-less so the whole order is retried next run.
-        return "partial-error"
-
-    manifest = {
-        "layout_version": LAYOUT_VERSION,
-        "item_code": code,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "order": {k: item.get(k) for k in ("product_name", "done_date", "quantity", "status")},
-        "files": fetched,
-    }
-    write_manifest_atomic(item_dir / COMPLETE_MARKER, manifest)
-    return "done" if fetched else "done-empty"
 
 
 # ----------------------------------------------------------------------------
@@ -575,6 +717,8 @@ def _parse_done(done: str):
     Handles a trailing 'Z' (Python <3.11 fromisoformat can't) and assumes UTC
     for naive timestamps, so comparisons against `since` never raise TypeError.
     """
+    if not isinstance(done, str):
+        return None
     s = done.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
@@ -601,6 +745,7 @@ def _usable_code(code) -> bool:
 
 def select_pending(items: list, since):
     pending = []
+    seen = set()
     for item in items:
         if item.get("status") != "complete":
             continue
@@ -612,8 +757,38 @@ def select_pending(items: list, since):
             dt = _parse_done(done)
             if dt is not None and dt < since:
                 continue
-        pending.append(item)
+        if item["code"] not in seen:
+            pending.append(item)
+            seen.add(item["code"])
     return pending
+
+
+def select_work(items: list, since, data_dir: Path, recheck_days: int):
+    """New orders obey SINCE; local recent downloads are watched independently."""
+    pending = [
+        item for item in select_pending(items, since)
+        if not any((data_dir / item["code"] / name).exists()
+                   for name in (COMPLETE_MARKER, REFRESH_MARKER))
+    ]
+    by_code = {i["code"]: i for i in items if _usable_code(i.get("code"))}
+    rechecks = []
+    for folder in sorted(data_dir.iterdir()):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        try:
+            manifest = load_manifest(folder)
+            if manifest is None:
+                continue
+            if manifest.get("layout_version") != LAYOUT_VERSION:
+                log.warning("%s needs migrate_legacy_zips.py before rechecking.", folder.name)
+                continue
+            if (folder / REFRESH_MARKER).exists() or within_recheck_window(manifest, recheck_days):
+                rechecks.append(by_code.get(folder.name, {
+                    **manifest.get("order", {}), "code": folder.name,
+                }))
+        except RetryableError as exc:
+            log.warning("Skipping %s: %s", folder.name, exc)
+    return pending, rechecks
 
 
 def main() -> int:
@@ -624,6 +799,10 @@ def main() -> int:
     parser.add_argument(
         "--scratch-dir",
         help="Override the local scratch directory for this run.",
+    )
+    parser.add_argument(
+        "--recheck-days", default=_recheck_days_env,
+        help="Watch orders this many days after first download (default: 45; 0 disables).",
     )
     args = parser.parse_args()
 
@@ -638,6 +817,14 @@ def main() -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(data_dir)
+
+    try:
+        recheck_days = int(args.recheck_days)
+        if not 0 <= recheck_days <= 999999999:
+            raise ValueError
+    except (ValueError, OverflowError):
+        log.error("PLASMIDSAURUS_RECHECK_DAYS / --recheck-days must be a non-negative integer (at most 999999999).")
+        return 2
 
     scratch_dir = Path(args.scratch_dir or SCRATCH_DIR)
     try:
@@ -677,17 +864,15 @@ def main() -> int:
 
         token = get_access_token(client_id, client_secret)
         items = get_items(token)
-        pending = select_pending(items, since)
-        pending = [i for i in pending if not (data_dir / i["code"] / COMPLETE_MARKER).exists()]
-
-        batch = pending[:MAX_DOWNLOADS_PER_RUN]
+        pending, rechecks = select_work(items, since, data_dir, recheck_days)
+        batch = pending[:MAX_DOWNLOADS_PER_RUN] + rechecks
         if not batch:
             log.info("Nothing new to fetch (%d complete orders already on disk).", len(items))
             return 0
 
         log.info(
-            "%d order(s) pending; handling %d this run: %s",
-            len(pending), len(batch), ", ".join(i["code"] for i in batch),
+            "%d new order(s) pending, %d recheck(s); handling %d this run: %s",
+            len(pending), len(rechecks), len(batch), ", ".join(i["code"] for i in batch),
         )
 
         summary = {}
@@ -700,6 +885,7 @@ def main() -> int:
                     scratch_dir,
                     min_free_bytes,
                     args.dry_run,
+                    recheck_days,
                 )
             except Exception as exc:  # never let one order kill the whole run
                 status = "error"
@@ -707,9 +893,9 @@ def main() -> int:
             summary[status] = summary.get(status, 0) + 1
 
         log.info("Run summary: %s", ", ".join(f"{k}={v}" for k, v in sorted(summary.items())))
-        if len(pending) > len(batch):
-            log.info("%d more will be fetched on the next run.", len(pending) - len(batch))
-        return 0
+        if len(pending) > MAX_DOWNLOADS_PER_RUN:
+            log.info("%d more new orders will be fetched on the next run.", len(pending) - MAX_DOWNLOADS_PER_RUN)
+        return 1 if summary.get("partial-error") or summary.get("error") else 0
 
     except NET_ERRORS as exc:
         log.error("API error, will retry next run: %s", exc)

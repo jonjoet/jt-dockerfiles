@@ -78,7 +78,7 @@ step 4). If the mount is managed by IT, you may need them for options (a)/(c):
      group. (Coordinate with IT if they manage the mount.)
 
 > If none of these are possible yet, you can still complete the install and test
-> with `--dry-run` (which writes nothing); real runs will fail on permission
+> with `--dry-run` (no downloads or order changes); real runs will fail on permission
 > until the share is writable.
 
 ---
@@ -143,6 +143,9 @@ PLASMIDSAURUS_SCRATCH_DIR=<<SCRATCH_DIR>>
 #PLASMIDSAURUS_MIN_FREE=536870912
 # Uncomment to limit the first-run backfill:
 #PLASMIDSAURUS_SINCE=<<SINCE>>
+# Watch for late Illumina reads / polished assemblies after first download.
+# Default 45 days; 0 disables new rechecks. Existing failed refreshes still retry.
+PLASMIDSAURUS_RECHECK_DAYS=45
 EOF
 
 # Readable only by root and the service user:
@@ -228,7 +231,7 @@ prints the next trigger times so you can sanity-check the expression.)
 ```bash
 sudo systemctl daemon-reload
 
-# 9a. Dry run as the service user — writes nothing, just lists what it would fetch.
+# 9a. Dry run — lists new orders and rechecks; no downloads or order changes.
 sudo -u <<SERVICE_USER>> bash -c \
   'set -a; . /etc/plasmidsaurus-autofetch/environment; set +a; \
    /usr/local/bin/plasmidsaurus-autofetch --dry-run'
@@ -245,6 +248,9 @@ find <<DATA_DIR>>/<ITEM_CODE> -maxdepth 2 -type f
 # Results are under results/; reads remain compressed under reads/ as *.fastq.gz.
 cat <<DATA_DIR>>/<ITEM_CODE>/.complete   # manifest for a finished order
 ```
+
+Dry runs still create the data directory if needed, write logs and take the run
+lock. They do not request ZIP links, inspect remote changes or modify orders.
 
 ---
 
@@ -266,13 +272,85 @@ systemctl list-timers plasmidsaurus-autofetch.timer   # shows next run time
   with extracted `results/` and/or `reads/` folders and a `.complete` manifest
   once fully downloaded. Files in `reads/` remain `*.fastq.gz`.
 
+### Late deliveries and the watch window
+
+Hybrid orders can deliver nanopore results first, then Illumina reads and a
+polished FASTA later. Version 2.1 rechecks every locally downloaded order for
+**45 days after its first successful download**. Set
+`PLASMIDSAURUS_RECHECK_DAYS` in the environment file, or override it for one run
+with `--recheck-days 90`. The value must be a non-negative integer; `0` disables
+new rechecks. Increasing it also re-enables watching older downloads. Failed
+refreshes already recorded in `.refresh.json` continue retrying regardless of
+the window, so crossing the cutoff cannot strand a partial update.
+
+The original `.complete` `fetched_at` anchors the window; receiving late files
+does not extend it. `PLASMIDSAURUS_SINCE` limits discovery of new orders only.
+Recent downloads remain watched even if the API no longer lists them or changes
+their status. Each timer pass handles at most five **new** orders plus **all**
+orders in the watch window. Large watch lists may need a less frequent timer.
+
+The [official API examples](https://github.com/plasmidsaurus/api_docs/blob/main/examples/plasmidsaurus-api-intro.py)
+document results/reads ZIP links, but no per-file listing or revision field.
+The downloader sends conditional GETs using saved `ETag` (preferred) or
+`Last-Modified` headers. If the server returns HTTP 304, it downloads no ZIP
+body. Signed URL changes alone do not trigger downloads, and signed URLs are
+not stored in manifests. **Validator support has not been verified against
+live customer downloads.** If validators are absent or the server ignores
+them, each check downloads the whole ZIP to scratch and compares its members.
+Even when only one file changes, the API requires a whole ZIP download.
+
+Each deliverable's `members` inventory in `.complete` maps relative filenames
+to byte counts and ZIP CRC32 values. New or changed files are staged on the
+share, then moved into `results/` or `reads/`. Unchanged files are not rewritten;
+same-name revisions are replaced, and files omitted from newer ZIPs are kept.
+CRC32 is used for change detection, not cryptographic integrity. Only one ZIP
+occupies local scratch at a time. The share needs room for all new/changed
+members staged across both deliverables, alongside the existing files.
+
+`.complete` describes the last successfully fetched snapshot, not finality at
+the provider. It records `last_checked_at` and `updated_at` in addition to the
+original `fetched_at`. A refresh first saves the previous manifest in
+`.refresh.json`. Download/extraction failures leave the existing snapshot
+untouched. During publication, `.complete` is removed, individual staged files
+are renamed into place, and the new manifest is written last. Publication is
+not an atomic swap of the entire order: consumers must wait for `.complete`
+and avoid reading an order while it is being updated. Interrupted publication
+leaves no `.complete` and is retried using `.refresh.json`. Do not delete that
+journal to clear an error. A failed order makes the service exit nonzero while
+other orders still get processed.
+
+### Upgrade an existing extracted installation (layout version 2)
+
+No migration is required for existing `results/` and `reads/` folders. On the VM,
+from the directory containing the updated script:
+
+```bash
+sudo systemctl stop plasmidsaurus-autofetch.timer
+sudo systemctl stop plasmidsaurus-autofetch.service
+sudo install -m 0755 plasmidsaurus_autofetch.py /usr/local/bin/plasmidsaurus-autofetch
+sudoedit /etc/plasmidsaurus-autofetch/environment
+# Optional: PLASMIDSAURUS_RECHECK_DAYS=45 (the default)
+sudo systemctl start plasmidsaurus-autofetch.service
+sudo journalctl -u plasmidsaurus-autofetch.service -n 100 --no-pager
+sudo systemctl start plasmidsaurus-autofetch.timer
+```
+
+Keep any local contact/header customizations when installing. No unit change,
+new dependency or `daemon-reload` is needed. Recent older manifests are upgraded
+automatically on their first recheck: the script inventories local files once
+and downloads the current archives to establish remote validators. Matching
+local files are not rewritten. Older downloads outside the window stay as-is;
+increase the window to catch a known missed delivery. Legacy ZIP-only orders
+still require section 12's migration. Invalid manifests or missing download
+dates produce warnings and are left for inspection rather than overwritten.
+
 ---
 
 ## 12. Upgrade from the legacy ZIP layout
 
-Version 2 downloads each ZIP to local scratch and extracts its members directly
-to the share. Existing completed orders are skipped based on `.complete`, so
-installing the new downloader alone will **not** redownload or convert them.
+Layout version 2 stores extracted files on the share. Legacy ZIP-only completed
+orders are skipped with a migration warning, so installing the new downloader
+alone will **not** redownload or convert those orders.
 Use the included one-time migration script to make old folders match the new
 layout.
 
@@ -369,8 +447,8 @@ it reuses the downloader's ZIP validation and extraction code.
      --data-dir <<DATA_DIR>> --delete-zips
    ```
 
-   No downloader hashes need updating: `.complete` records counts and byte
-   sizes, not checksums. Regenerate any separately maintained hashdeep/checksum
+   The migration writes member sizes and CRC32s into `.complete` automatically.
+   Regenerate any separately maintained hashdeep/checksum
    inventory because paths and the set of files have changed.
 
 6. Test one normal run and restart the timer:
@@ -417,6 +495,9 @@ sudo userdel <<SERVICE_USER>>
 | An order shows a folder but no `.complete` | A download was interrupted; it will retry on the next run. Safe. |
 | `not enough free space` / an order retries | The disk-backed local scratch or destination share is too full. Scratch must hold the largest individual ZIP; verify it is not `tmpfs`/`ramfs` (section 0). |
 | Legacy ZIP folders remain after migration | Expected unless `--delete-zips` was explicitly supplied after verification (step 12). |
+| `.refresh.json` remains / service reports a refresh failure | Inspect the log; the next run retries, including beyond the watch cutoff. Keep the journal. Previously available archives returning 404/410 are treated as refresh failures, not deletions. |
+| Late files are missing from an old order | Check the original `fetched_at` and increase `PLASMIDSAURUS_RECHECK_DAYS`. Watch age is download age, not API completion age. |
+| Every recheck downloads large ZIPs | The server may not supply or honor validators; compare the manifest's `remote` fields and logs for `HTTP 304`. Reduce timer frequency if needed. |
 | Timer never fires | `systemctl list-timers`; check `OnCalendar` with `systemd-analyze calendar`. |
 | Runs but fetches nothing | Normal if everything complete is already on disk (see the log line). |
 
@@ -424,9 +505,31 @@ sudo userdel <<SERVICE_USER>>
 
 ## 15. Repository checks
 
-The focused offline suite uses only the standard library and creates temporary
-files under this service directory:
+The focused offline suite uses only the standard library. From the repository
+root, run it in Docker as your own UID/GID. It preserves fixtures, output and
+the test log in a labelled, ignored run directory under this service:
 
 ```bash
-python3 -m unittest discover -s tests -v
+run_dir="Services/Plasmidsaurus_AutoDownloader/tests/runs/late-deliveries-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$run_dir"
+dirty=no
+if test -n "$(git status --porcelain)"; then dirty=yes; fi
+{
+  printf 'commit:  %s   dirty: %s\n' "$(git rev-parse HEAD)" "$dirty"
+  printf 'started: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'purpose: unit\n'
+} > "$run_dir/RUN.txt"
+docker run --rm --network none -u "$(id -u):$(id -g)" \
+  -v "$PWD:/workspace" -w /workspace \
+  -e PYTHONDONTWRITEBYTECODE=1 -e TMPDIR="/workspace/$run_dir" \
+  -e PLASMIDSAURUS_TEST_ROOT="/workspace/$run_dir" \
+  python:3.12-slim python -m unittest discover \
+  -s Services/Plasmidsaurus_AutoDownloader/tests -v > "$run_dir/tests.log" 2>&1
+test_status=$?
+cat "$run_dir/tests.log"
+test "$test_status" -eq 0
 ```
+
+These are offline tests with simulated API responses, not live API or SMB
+acceptance. For a host-only run, set `PLASMIDSAURUS_TEST_ROOT` to the absolute
+path of the labelled run directory and use the same unittest command.

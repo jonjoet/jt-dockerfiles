@@ -118,6 +118,7 @@ def migrate_order(
             "files": stats["files"],
             "bytes": stats["bytes"],
             "archive_bytes": archive_bytes,
+            "members": stats["members"],
         }
 
     updated = dict(manifest)
