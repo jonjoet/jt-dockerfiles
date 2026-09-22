@@ -66,9 +66,10 @@ SAFE TO RE-RUN
     `.complete` describes the latest fully downloaded snapshot, not a promise
     that Plasmidsaurus will never add files. It records member paths, sizes and
     CRC32s, HTTP validators, the original fetched_at, and last_checked_at.
-    Refresh failures retain a .refresh.json journal for retry (even after the
-    watch window). The old .complete stays valid until publication begins;
-    it is removed during publication and rewritten last. Run by hand:
+    Interrupted publication retains a .refresh.json journal for recovery even
+    after the watch window. Ordinary recheck failures use the normal window;
+    remote archival leaves completed local files intact. The old .complete is
+    removed during publication and rewritten last. Run by hand:
         python3 plasmidsaurus_autofetch.py            # one normal pass
         python3 plasmidsaurus_autofetch.py --dry-run  # list what it WOULD fetch
 
@@ -249,6 +250,10 @@ class DownloadDeferred(Exception):
     """The run's download budget is full; leave this order for a later run."""
 
 
+class ArchiveUnavailable(RetryableError):
+    """An archive download returned HTTP 404/410."""
+
+
 class DownloadBudget:
     def __init__(self, limit: int):
         self.limit = limit
@@ -315,7 +320,9 @@ def fetch_link(token: str, code: str, kind: str):
             raise RetryableError(f"{kind} for {code}: HTTP {exc.code}")
         log.info("  no %s available for %s (HTTP %s)", kind, code, exc.code)
         return None
-    return payload.get("link")
+    if not payload.get("link"):
+        raise RetryableError(f"{kind} for {code}: API response has no download link")
+    return payload["link"]
 
 
 def ensure_free_space(path: Path, needed_bytes: int, margin: float = 1.05) -> None:
@@ -395,6 +402,8 @@ def download_to_scratch(
     except urllib.error.HTTPError as exc:
         if exc.code == 304 and len(headers) > 1:
             return None
+        if exc.code in (404, 410):
+            raise ArchiveUnavailable(f"download HTTP {exc.code}") from exc
         # HTTPError.__str__ omits the signed URL, unlike some transport errors.
         raise RetryableError(f"download HTTP {exc.code}") from exc
     except NET_ERRORS:
@@ -528,10 +537,10 @@ def write_manifest_atomic(path: Path, manifest: dict) -> None:
 # ----------------------------------------------------------------------------
 
 def load_manifest(item_dir: Path):
-    """Use the pre-refresh snapshot after an interruption, even without .complete."""
-    path = item_dir / REFRESH_MARKER
+    """A committed snapshot takes precedence over a leftover recovery journal."""
+    path = item_dir / COMPLETE_MARKER
     if not path.exists():
-        path = item_dir / COMPLETE_MARKER
+        path = item_dir / REFRESH_MARKER
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -612,11 +621,15 @@ def process_item(
     code = item["code"]
     item_dir = data_dir / code
     previous = load_manifest(item_dir)
-    retry = (item_dir / REFRESH_MARKER).exists()
+    retry = (item_dir / REFRESH_MARKER).exists() and not (item_dir / COMPLETE_MARKER).exists()
     if previous is not None:
         if previous.get("layout_version") != LAYOUT_VERSION:
             log.warning("%s needs migrate_legacy_zips.py before rechecking.", code)
             return "skip-legacy"
+        # Old releases journaled ordinary recheck failures. A valid .complete
+        # means publication either never started or finished successfully.
+        if not retry and not dry_run:
+            (item_dir / REFRESH_MARKER).unlink(missing_ok=True)
         if not retry and not within_recheck_window(previous, recheck_days):
             return "skip-done"
 
@@ -625,18 +638,26 @@ def process_item(
         log.info("[dry-run] would %s %s (%s)", action, code, item.get("product_name", "?"))
         return "would-" + action
 
+    if previous is None and budget is not None and len(budget.orders) >= budget.limit:
+        log.info("  download budget full; deferring new order %s without network requests", code)
+        return "deferred"
+
     item_dir.mkdir(parents=True, exist_ok=True)
     def begin_download():
         if budget is not None:
             budget.claim(code)
-        # A deferred or unchanged check must not create a retry journal: that
-        # would disable its validators next time and force needless downloads.
-        if previous is not None and not (item_dir / REFRESH_MARKER).exists():
-            write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
 
     fetched = dict(previous["files"]) if previous is not None else {}
     staged = []
     changed = False
+    unavailable = False
+
+    def keep_unavailable(kind):
+        if retry:
+            raise RetryableError(f"cannot recover interrupted publication: {kind} is unavailable")
+        log.info("  %s for %s is no longer available remotely; retaining the downloaded files",
+                 kind, code)
+
     try:
         for kind in DATA_TYPES:
             staging = item_dir / f".{kind}.partial"
@@ -644,7 +665,8 @@ def process_item(
             link = fetch_link(token, code, kind)
             if not link:
                 if kind in fetched:
-                    raise RetryableError(f"previously downloaded {kind} is unavailable")
+                    keep_unavailable(kind)
+                    unavailable = True
                 continue
             old = fetched.get(kind, {})
             destination = item_dir / kind
@@ -663,11 +685,18 @@ def process_item(
             ) as work:
                 scratch_zip = Path(work) / f"{code}_{kind}.zip"
                 log.info("  checking %s for %s ...", kind, code)
-                remote = download_to_scratch(
-                    link, scratch_zip, min_free_bytes,
-                    previous=old.get("remote") if intact and not retry else None,
-                    before_download=begin_download,
-                )
+                try:
+                    remote = download_to_scratch(
+                        link, scratch_zip, min_free_bytes,
+                        previous=old.get("remote") if intact and not retry else None,
+                        before_download=begin_download,
+                    )
+                except ArchiveUnavailable:
+                    if kind not in fetched:
+                        raise
+                    keep_unavailable(kind)
+                    unavailable = True
+                    continue
                 if remote is None:
                     log.info("  %s unchanged (HTTP 304)", kind)
                     continue
@@ -695,6 +724,8 @@ def process_item(
         # All downloads/extractions passed. During publication the order is
         # marker-less, so consumers cannot mistake a partial refresh for success.
         if staged:
+            if previous is not None and not retry:
+                write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
             (item_dir / COMPLETE_MARKER).unlink(missing_ok=True)
         for staging, destination in staged:
             destination.mkdir(exist_ok=True)
@@ -717,14 +748,12 @@ def process_item(
         write_manifest_atomic(item_dir / COMPLETE_MARKER, manifest)
         (item_dir / REFRESH_MARKER).unlink(missing_ok=True)
         if previous is not None:
-            return "updated" if changed else "unchanged"
+            return "updated" if changed else "remote-unavailable" if unavailable else "unchanged"
         return "done" if fetched else "done-empty"
     except DownloadDeferred:
         log.info("  download budget full; deferring %s", code)
         return "deferred"
     except (RetryableError, OSError, *NET_ERRORS) as exc:
-        if previous is not None and not (item_dir / REFRESH_MARKER).exists():
-            write_manifest_atomic(item_dir / REFRESH_MARKER, previous)
         log.warning("  problem fetching %s: %s", code, exc)
         return "partial-error"
     finally:

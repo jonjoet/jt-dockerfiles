@@ -279,9 +279,9 @@ polished FASTA later. Version 2.1 rechecks every locally downloaded order for
 **45 days after its first successful download**. Set
 `PLASMIDSAURUS_RECHECK_DAYS` in the environment file, or override it for one run
 with `--recheck-days 90`. The value must be a non-negative integer; `0` disables
-new rechecks. Increasing it also re-enables watching older downloads. Failed
-refreshes already recorded in `.refresh.json` continue retrying regardless of
-the window, so crossing the cutoff cannot strand a partial update.
+new rechecks. Increasing it also re-enables watching older downloads. Interrupted
+publication recorded in `.refresh.json` with no `.complete` continues retrying
+regardless of the window, so crossing the cutoff cannot strand a partial update.
 
 The original `.complete` `fetched_at` anchors the window; receiving late files
 does not extend it. `PLASMIDSAURUS_SINCE` limits discovery of new orders only.
@@ -289,7 +289,8 @@ Recent downloads remain watched even if the API no longer lists them or changes
 their status. Each timer pass **downloads archives for at most five orders**.
 Unchanged checks (HTTP 304) do not consume a slot. Both results and reads ZIPs
 for one order share a single slot; a failed transfer still consumes its slot.
-All eligible orders can be checked, even after the download budget is full:
+Once the download budget is full, new orders are deferred without per-order
+network requests. Previously downloaded orders still get conditional checks:
 responses needing an archive download are closed without reading the body and
 deferred, while unchanged checks continue. For example, twenty unchanged orders
 followed by five changed orders can all be handled in one run.
@@ -324,16 +325,37 @@ members staged across both deliverables, alongside the existing files.
 
 `.complete` describes the last successfully fetched snapshot, not finality at
 the provider. It records `last_checked_at` and `updated_at` in addition to the
-original `fetched_at`. Before an admitted download starts, a refresh saves the
-previous manifest in `.refresh.json`. Unchanged and budget-deferred checks do
-not create refresh journals. Download/extraction failures leave the existing snapshot
-untouched. During publication, `.complete` is removed, individual staged files
+original `fetched_at`. Only after downloading, staging and validation succeed,
+immediately before publication, a refresh saves the previous manifest in
+`.refresh.json`. Ordinary checking/download/extraction failures leave the
+existing snapshot untouched and do not create recovery journals; they retry
+within the normal watch window, keeping validators enabled. During publication,
+`.complete` is removed, individual staged files
 are renamed into place, and the new manifest is written last. Publication is
 not an atomic swap of the entire order: consumers must wait for `.complete`
 and avoid reading an order while it is being updated. Interrupted publication
 leaves no `.complete` and is retried using `.refresh.json`. Do not delete that
 journal to clear an error. A failed order makes the service exit nonzero while
 other orders still get processed.
+
+Remote archival is separate from an update. When a previously downloaded
+archive returns HTTP 404/410 during an ordinary recheck, the service logs that
+it is no longer available remotely, retains its local files and inventory, and
+continues checking the other deliverable. This is not a failed run and does
+not create a journal or extend the watch window. The summary reports
+`remote-unavailable` if no other files changed. Availability is checked again
+on subsequent runs within the window, so temporary disappearance does not
+permanently disable future updates. Authentication errors, rate limiting,
+server errors and malformed link responses still count as errors.
+
+A valid `.complete` takes precedence over a leftover `.refresh.json`: either
+publication never started or the final commit succeeded before journal cleanup.
+Normal runs clear such redundant journals, including ones written by older
+versions for routine recheck failures. Expired completed orders need no network
+requests for this cleanup; dry runs leave journals untouched. A journal without
+`.complete` still means publication may have been interrupted. Its recovery
+behavior remains unchanged, including reporting failure if required archives
+are unavailable; it is never silently marked complete.
 
 ### Upgrade an existing extracted installation (layout version 2)
 
@@ -528,7 +550,8 @@ sudo userdel <<SERVICE_USER>>
 | An order shows a folder but no `.complete` | A download was interrupted; it will retry on the next run. Safe. |
 | `not enough free space` / an order retries | The disk-backed local scratch or destination share is too full. Scratch must hold the largest individual ZIP; verify it is not `tmpfs`/`ramfs` (section 0). |
 | Legacy ZIP folders remain after migration | Expected unless `--delete-zips` was explicitly supplied after verification (step 12). |
-| `.refresh.json` remains / service reports a refresh failure | Inspect the log; the next run retries, including beyond the watch cutoff. Keep the journal. Previously available archives returning 404/410 are treated as refresh failures, not deletions. |
+| `.refresh.json` remains without `.complete` | Publication may have been interrupted; the next run retries, including beyond the watch cutoff. Keep the journal and inspect the log if recovery cannot finish. |
+| `remote-unavailable` in the summary | A previously downloaded archive returned 404/410. Local data is retained; normal rechecks stop at the watch cutoff. No recovery is required for an otherwise complete snapshot. |
 | Late files are missing from an old order | Check the original `fetched_at` and increase `PLASMIDSAURUS_RECHECK_DAYS`. Watch age is download age, not API completion age. |
 | Every recheck downloads large ZIPs | The server may not supply or honor validators; compare the manifest's `remote` fields and logs for `HTTP 304`. Reduce timer frequency if needed. |
 | Timer never fires | `systemctl list-timers`; check `OnCalendar` with `systemd-analyze calendar`. |

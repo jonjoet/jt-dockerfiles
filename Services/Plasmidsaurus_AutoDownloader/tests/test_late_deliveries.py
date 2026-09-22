@@ -118,7 +118,7 @@ class LateDeliveryTests(PreservedTestCase):
         self.assertEqual(old.stat().st_mtime, 1000000000)
         self.assertEqual(self.manifest()['fetched_at'], manifest['fetched_at'])
 
-    def test_failure_keeps_previous_snapshot_and_retries_after_window(self):
+    def test_failure_before_publication_keeps_snapshot_and_obeys_window(self):
         self.run_order()
         original = (self.folder / '.complete').read_bytes()
         self.add_illumina()
@@ -126,9 +126,10 @@ class LateDeliveryTests(PreservedTestCase):
         self.assertEqual(self.run_order(), 'partial-error')
         self.assertEqual((self.folder / '.complete').read_bytes(), original)
         self.assertFalse((self.folder / 'results/polished.fasta').exists())
-        self.assertTrue((self.folder / '.refresh.json').exists())
+        self.assertFalse((self.folder / '.refresh.json').exists())
         self.fail = None
-        self.assertEqual(self.run_order(recheck_days=0), 'updated')
+        self.assertEqual(self.run_order(recheck_days=0), 'skip-done')
+        self.assertEqual(self.run_order(), 'updated')
         self.assertEqual(self.manifest()['fetched_at'], json.loads(original)['fetched_at'])
 
     def test_publication_interruption_retries_without_false_complete(self):
@@ -154,13 +155,97 @@ class LateDeliveryTests(PreservedTestCase):
         self.archives['reads'] = {'illumina.fastq.gz': b'late'}
         self.assertEqual(self.run_order(), 'updated')
 
-    def test_missing_previous_archive_is_retryable_not_deletion(self):
+    def test_remote_archival_preserves_local_snapshot_without_recovery(self):
         self.run_order()
-        previous = (self.folder / '.complete').read_bytes()
+        previous = self.manifest()
+        self.archives['reads'] = None
+        self.assertEqual(self.run_order(), 'remote-unavailable')
+        self.assertEqual(self.manifest()['files'], previous['files'])
+        self.assertTrue((self.folder / 'reads/ont.fastq.gz').exists())
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.assertEqual(self.run_order(), 'remote-unavailable')
+        expired = self.manifest()
+        expired['fetched_at'] = (datetime.now(timezone.utc) - timedelta(days=46)).isoformat()
+        fetch.write_manifest_atomic(self.folder / '.complete', expired)
+        with mock.patch.object(fetch, 'fetch_link') as links:
+            self.assertEqual(self.run_order(), 'skip-done')
+            links.assert_not_called()
+
+    def test_archived_reads_do_not_block_new_results(self):
+        self.run_order()
+        self.add_illumina()
+        self.archives['reads'] = None
+        self.assertEqual(self.run_order(), 'updated')
+        self.assertTrue((self.folder / 'results/polished.fasta').exists())
+        self.assertTrue((self.folder / 'reads/ont.fastq.gz').exists())
+        self.assertFalse((self.folder / '.refresh.json').exists())
+
+    def test_archive_download_404_preserves_existing_snapshot(self):
+        self.run_order()
+        with mock.patch.object(fetch, 'download_to_scratch', side_effect=fetch.ArchiveUnavailable('HTTP 404')):
+            self.assertEqual(self.run_order(), 'remote-unavailable')
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.assertTrue((self.folder / 'results/ont.fasta').exists())
+
+    def test_transient_check_failure_does_not_disable_validators(self):
+        self.run_order()
+        original = (self.folder / '.complete').read_bytes()
+        with mock.patch.object(fetch, 'fetch_link', side_effect=fetch.RetryableError('HTTP 429')):
+            self.assertEqual(self.run_order(), 'partial-error')
+        self.assertEqual((self.folder / '.complete').read_bytes(), original)
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.requests.clear()
+        budget = fetch.DownloadBudget(0)
+        self.assertEqual(self.run_order(budget=budget), 'unchanged')
+        self.assertTrue(all(previous.get('etag') for _, previous in self.requests))
+        self.assertEqual(budget.orders, set())
+
+    def test_redundant_legacy_journal_uses_complete_snapshot_and_is_cleared(self):
+        self.run_order()
+        old = self.manifest()
+        self.add_illumina()
+        self.run_order()
+        current = self.manifest()
+        fetch.write_manifest_atomic(self.folder / '.refresh.json', old)
+        self.assertEqual(fetch.load_manifest(self.folder), current)
+        self.assertEqual(fetch.process_item(self.item, 'token', self.data, self.scratch, 0, True), 'would-recheck')
+        self.assertTrue((self.folder / '.refresh.json').exists())
+        self.assertEqual(self.run_order(budget=fetch.DownloadBudget(0)), 'unchanged')
+        self.assertFalse((self.folder / '.refresh.json').exists())
+
+    def test_expired_order_with_legacy_journal_is_not_contacted(self):
+        self.run_order()
+        old = self.manifest()
+        old['fetched_at'] = (datetime.now(timezone.utc) - timedelta(days=46)).isoformat()
+        fetch.write_manifest_atomic(self.folder / '.complete', old)
+        fetch.write_manifest_atomic(self.folder / '.refresh.json', old)
+        with mock.patch.object(fetch, 'fetch_link') as links:
+            self.assertEqual(self.run_order(), 'skip-done')
+            links.assert_not_called()
+        self.assertFalse((self.folder / '.refresh.json').exists())
+
+    def test_invalid_complete_does_not_discard_recovery_journal(self):
+        self.run_order()
+        fetch.write_manifest_atomic(self.folder / '.refresh.json', self.manifest())
+        (self.folder / '.complete').write_text('invalid json')
+        with self.assertRaises(fetch.RetryableError):
+            self.run_order()
+        self.assertTrue((self.folder / '.refresh.json').exists())
+
+    def test_missing_archive_during_real_recovery_does_not_mark_complete(self):
+        self.run_order()
+        fetch.write_manifest_atomic(self.folder / '.refresh.json', self.manifest())
+        (self.folder / '.complete').unlink()
         self.archives['reads'] = None
         self.assertEqual(self.run_order(), 'partial-error')
-        self.assertEqual((self.folder / '.complete').read_bytes(), previous)
-        self.assertTrue((self.folder / 'reads/ont.fastq.gz').exists())
+        self.assertTrue((self.folder / '.refresh.json').exists())
+        self.assertFalse((self.folder / '.complete').exists())
+
+    def test_new_order_after_budget_is_full_makes_no_network_requests(self):
+        with mock.patch.object(fetch, 'fetch_link') as links:
+            self.assertEqual(self.run_order(budget=fetch.DownloadBudget(0)), 'deferred')
+            links.assert_not_called()
+        self.assertFalse(self.folder.exists())
 
     def test_deleted_local_file_forces_download(self):
         self.run_order()
@@ -312,6 +397,21 @@ class LateDeliveryTests(PreservedTestCase):
 
 
 class DownloadTests(PreservedTestCase):
+    def test_archive_404_and_410_are_distinct_from_transient_errors(self):
+        for status in (404, 410):
+            error = urllib.error.HTTPError('https://example.test/archive', status, 'gone', {}, None)
+            before_download = mock.Mock()
+            with mock.patch.object(fetch.urllib.request, 'urlopen', side_effect=error):
+                with self.assertRaises(fetch.ArchiveUnavailable):
+                    fetch.download_to_scratch('https://example.test/archive', self.root / 'zip', 0,
+                                              before_download=before_download)
+            before_download.assert_not_called()
+
+    def test_missing_link_in_success_response_is_not_treated_as_archival(self):
+        with mock.patch.object(fetch, '_api_get', return_value={}):
+            with self.assertRaisesRegex(fetch.RetryableError, 'no download link'):
+                fetch.fetch_link('token', 'HYBRID', 'results')
+
     def test_budget_exhaustion_closes_response_without_reading_body(self):
         response = io.BytesIO(b'archive')
         response.headers = {'Content-Length': '7'}
