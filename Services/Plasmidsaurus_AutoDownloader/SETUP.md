@@ -148,6 +148,8 @@ PLASMIDSAURUS_SCRATCH_DIR=<<SCRATCH_DIR>>
 PLASMIDSAURUS_RECHECK_DAYS=45
 # Maximum orders downloading archives per run (positive integer; default 5):
 PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN=5
+# Minimum seconds between API request starts (0–60; default 2):
+PLASMIDSAURUS_API_INTERVAL=2
 EOF
 
 # Readable only by root and the service user:
@@ -309,13 +311,50 @@ downloaded every time. Dry runs list eligible orders without downloading or
 advancing the queue; they cannot predict which orders will use download slots.
 The limit bounds orders downloading archives, not elapsed time or total bytes.
 
+API requests are paced separately: `PLASMIDSAURUS_API_INTERVAL` sets the minimum
+seconds between request starts (default **2**, roughly at most 30 API requests
+per minute). Override it for a manual run with `--api-interval 3`. Values from
+0 through 60, including fractions, are accepted; `0` disables spacing, but
+does not disable 429 handling. This applies to authentication, order listings
+and download-link requests. Archive GETs do not receive this baseline delay.
+The default is a starting point, **not a verified provider quota**; increase
+it if live runs still encounter throttling. Reducing the download-order limit
+does not limit the number of unchanged-order checks.
+
+Both API requests and archive GETs handle HTTP **429 (Too Many Requests)**:
+
+- Retry the same request up to three times after the initial attempt, honoring
+  `Retry-After` in seconds or HTTP-date form. Missing or malformed headers use
+  30-, 60-, then 120-second delays. Zero or past values wait at least one second.
+- Share a maximum of **300 seconds of 429 retry waits per run**. Normal request
+  spacing and network transfer time are separate from this budget.
+- If retries are exhausted or the next delay exceeds the remaining wait budget,
+  stop making requests and exit nonzero. The throttled order retains its queue
+  position, along with earlier deferred and still-unattempted orders; successful
+  checks stay behind them. Already published files remain intact, and an ordinary
+  throttled refresh does not create a recovery journal.
+- Save the next allowed attempt time in `_autofetch.cooldown.json` beside the
+  queue. Runs started before that time exit nonzero **without any requests**.
+  Longer server delays are preserved rather than shortened to five minutes.
+  Once the cooldown expires, normal processing resumes automatically. Keep this
+  file when upgrading; expired records are harmless and replaced on later
+  throttling. Dry runs also honor and may record a cooldown, but do not change
+  order files or advance the queue.
+
+The retry count and wait budget are fixed safety bounds. A recovered 429 does
+not itself fail the run. Requests rejected with 429, like unchanged HTTP 304
+checks, consume no download slot; an archive body already downloaded for that
+order still counts. Other HTTP errors retain their existing handling. A 429
+is a service-wide throttle, not a reason to add `.ignore` to individual orders.
+
 The [official API examples](https://github.com/plasmidsaurus/api_docs/blob/main/examples/plasmidsaurus-api-intro.py)
 document results/reads ZIP links, but no per-file listing or revision field.
 The downloader sends conditional GETs using saved `ETag` (preferred) or
 `Last-Modified` headers. If the server returns HTTP 304, it downloads no ZIP
 body. Signed URL changes alone do not trigger downloads, and signed URLs are
-not stored in manifests. **Validator support has not been verified against
-live customer downloads.** If validators are absent or the server ignores
+not stored in manifests. Live VM logs on 2026-09-22 confirmed HTTP 304 responses
+for results and reads; this does not guarantee support for every archive.
+If validators are absent or the server ignores
 them, checking an archive requires downloading the whole ZIP to scratch and
 comparing its members. That consumes a download slot even if the contents turn
 out to be unchanged; once all configured slots are used, those checks are deferred.
@@ -407,6 +446,7 @@ sudo install -m 0755 plasmidsaurus_autofetch.py /usr/local/bin/plasmidsaurus-aut
 sudoedit /etc/plasmidsaurus-autofetch/environment
 # Optional: PLASMIDSAURUS_RECHECK_DAYS=45 (the default)
 # Optional: PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN=5 (the default)
+# Optional: PLASMIDSAURUS_API_INTERVAL=2 (the default; try 3 if throttling persists)
 sudo systemctl start plasmidsaurus-autofetch.service
 sudo journalctl -u plasmidsaurus-autofetch.service -n 100 --no-pager
 sudo systemctl start plasmidsaurus-autofetch.timer
@@ -414,7 +454,9 @@ sudo systemctl start plasmidsaurus-autofetch.timer
 
 The same procedure applies when upgrading from either earlier late-delivery
 release to the configurable download-order budget (default five). There is no additional migration or
-configuration change. Existing queue files remain compatible; a missing queue
+required configuration change. Request pacing and bounded 429 retries also
+apply automatically when upgrading; no migration is required. Existing queue
+files remain compatible; a missing queue
 is created automatically. The manual service start checks eligible orders and
 downloads archives for at most the configured number; timer runs pick up deferred downloads.
 
@@ -422,7 +464,7 @@ To cancel a running batch before upgrading, stop the timer and service with
 the first two commands above. Ctrl-C on `systemctl start` may only stop waiting,
 so explicitly stop the service. Already completed orders remain available;
 unfinished work is retried on a later turn in the queue. Keep `.complete`,
-`.refresh.json` and the queue file. If interrupted during publication, that
+`.refresh.json`, the queue file and `_autofetch.cooldown.json`. If interrupted during publication, that
 order temporarily has no `.complete` until its retry succeeds. The interrupted
 ZIP may need to be downloaded again. A terminated process can leave scratch
 files behind (especially with a custom scratch directory); these are not
@@ -594,6 +636,7 @@ sudo userdel <<SERVICE_USER>>
 | `remote-unavailable` in the summary | A previously downloaded archive returned 404/410. Local data is retained; normal rechecks stop at the watch cutoff. No recovery is required for an otherwise complete snapshot. |
 | Late files are missing from an old order | Check the original `fetched_at` and increase `PLASMIDSAURUS_RECHECK_DAYS`. Watch age is download age, not API completion age. |
 | Every recheck downloads large ZIPs | The server may not supply or honor validators; compare the manifest's `remote` fields and logs for `HTTP 304`. Reduce timer frequency if needed. |
+| HTTP 429 / `Rate-limit cooldown active` | Requests are being throttled. The service retries with bounded waits, then stops and honors the saved cooldown on later runs. Avoid repeated manual restarts; increase `PLASMIDSAURUS_API_INTERVAL` if throttling persists. Lowering the download cap does not cap unchanged checks. |
 | Timer never fires | `systemctl list-timers`; check `OnCalendar` with `systemd-analyze calendar`. |
 | Runs but fetches nothing | Normal if everything complete is already on disk (see the log line). |
 

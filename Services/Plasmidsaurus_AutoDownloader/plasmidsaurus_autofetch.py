@@ -67,6 +67,9 @@ CONFIG (environment variables; supplied by the systemd unit's EnvironmentFile)
     PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN
                                   (optional) positive integer cap on orders
                                   downloading archives per run (default 5).
+    PLASMIDSAURUS_API_INTERVAL    (optional) minimum seconds between API request
+                                  starts (default 2; range 0–60). HTTP 429 waits
+                                  honor Retry-After, with bounded retries.
 
 DEPENDENCIES
     Python 3.8+ standard library only. No pip packages, no virtualenv.
@@ -106,6 +109,7 @@ import urllib.request
 import zipfile
 import zlib
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -138,6 +142,9 @@ DATA_TYPES = ("results", "reads")
 # Cap orders whose archive bodies are downloaded, not metadata-only checks.
 # Both deliverables share one slot; interrupted body transfers still count.
 DEFAULT_MAX_DOWNLOADS_PER_RUN = 5
+DEFAULT_API_INTERVAL = 2.0
+MAX_RATE_LIMIT_RETRIES = 3
+MAX_RATE_LIMIT_WAIT = 300
 
 # Only consider orders completed on/after this date, if set (env override).
 _since_env = os.getenv("PLASMIDSAURUS_SINCE")
@@ -156,6 +163,7 @@ COMPLETE_MARKER = ".complete"
 REFRESH_MARKER = ".refresh.json"
 IGNORE_MARKER = ".ignore"
 QUEUE_FILE = "_autofetch.queue.json"
+COOLDOWN_FILE = "_autofetch.cooldown.json"
 LAYOUT_VERSION = 2
 MAX_ZIP_MEMBERS = 100_000
 
@@ -264,6 +272,61 @@ class ArchiveUnavailable(RetryableError):
     """An archive download returned HTTP 404/410."""
 
 
+class RateLimited(RetryableError):
+    """Stop all requests until retry_at (UTC epoch seconds)."""
+
+    def __init__(self, retry_at):
+        super().__init__("HTTP 429 retry limit reached; remaining work deferred")
+        self.retry_at = retry_at
+
+
+class HttpClient:
+    """Pace API calls and share a bounded 429 wait budget across a whole run."""
+
+    def __init__(self, api_interval=DEFAULT_API_INTERVAL):
+        self.api_interval = api_interval
+        self.last_api_start = None
+        self.waited = 0.0
+
+    def open(self, req, api=False):
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            if api:
+                if self.last_api_start is not None:
+                    delay = self.api_interval - (time.monotonic() - self.last_api_start)
+                    if delay > 0:
+                        time.sleep(delay)
+                self.last_api_start = time.monotonic()
+            try:
+                return urllib.request.urlopen(req, timeout=HTTP_TIMEOUT)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 429:
+                    raise
+                raw = (exc.headers or {}).get("Retry-After", "").strip()
+                exc.close()
+                delay = 30 * (2 ** attempt)
+                try:
+                    if raw.isascii() and raw.isdigit():
+                        parsed = float(raw)
+                    else:
+                        date = parsedate_to_datetime(raw)
+                        if date.tzinfo is None:
+                            date = date.replace(tzinfo=timezone.utc)
+                        parsed = date.timestamp() - time.time()
+                    if math.isfinite(parsed):
+                        delay = max(1.0, parsed)
+                except (TypeError, ValueError, OverflowError):
+                    pass  # Missing/malformed Retry-After: exponential fallback.
+                if attempt == MAX_RATE_LIMIT_RETRIES or self.waited + delay > MAX_RATE_LIMIT_WAIT:
+                    raise RateLimited(time.time() + delay) from None
+                log.warning("HTTP 429; waiting %.1f seconds before retry %d/%d",
+                            delay, attempt + 1, MAX_RATE_LIMIT_RETRIES)
+                self.waited += delay
+                time.sleep(delay)
+
+
+_http = HttpClient()
+
+
 class DownloadBudget:
     def __init__(self, limit: int):
         self.limit = limit
@@ -277,7 +340,7 @@ class DownloadBudget:
 
 
 def _read_json(req: urllib.request.Request):
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+    with _http.open(req, api=True) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -374,7 +437,7 @@ def download_to_scratch(
         headers["If-Modified-Since"] = previous["last_modified"]
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        with _http.open(req) as resp:
             metadata = {
                 "etag": resp.headers.get("ETag"),
                 "last_modified": resp.headers.get("Last-Modified"),
@@ -763,6 +826,8 @@ def process_item(
         if previous is not None:
             return "updated" if changed else "remote-unavailable" if unavailable else "unchanged"
         return "done" if fetched else "done-empty"
+    except RateLimited:
+        raise  # Account-wide throttling must stop the run, not just this order.
     except DownloadDeferred:
         log.info("  download budget full; deferring %s", code)
         return "deferred"
@@ -906,6 +971,7 @@ def work_queue(pending: list, rechecks: list, data_dir: Path) -> list:
 
 
 def main() -> int:
+    global _http
     parser = argparse.ArgumentParser(description="Auto-fetch Plasmidsaurus results to the share.")
     parser.add_argument("--once", action="store_true", help="Run one pass (default).")
     parser.add_argument("--dry-run", action="store_true", help="List what would be fetched; download nothing.")
@@ -922,6 +988,11 @@ def main() -> int:
         "--max-downloads-per-run",
         default=os.getenv("PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN", str(DEFAULT_MAX_DOWNLOADS_PER_RUN)),
         help="Maximum orders downloading archives per run (positive integer; default: 5).",
+    )
+    parser.add_argument(
+        "--api-interval",
+        default=os.getenv("PLASMIDSAURUS_API_INTERVAL", str(DEFAULT_API_INTERVAL)),
+        help="Minimum seconds between API request starts (0–60; default: 2).",
     )
     args = parser.parse_args()
 
@@ -952,6 +1023,15 @@ def main() -> int:
     except ValueError:
         log.error("PLASMIDSAURUS_MAX_DOWNLOADS_PER_RUN / --max-downloads-per-run must be a positive integer.")
         return 2
+
+    try:
+        api_interval = float(args.api_interval)
+        if not math.isfinite(api_interval) or not 0 <= api_interval <= 60:
+            raise ValueError
+    except ValueError:
+        log.error("PLASMIDSAURUS_API_INTERVAL / --api-interval must be a finite number from 0 to 60 seconds.")
+        return 2
+    _http = HttpClient(api_interval)
 
     scratch_dir = Path(args.scratch_dir or SCRATCH_DIR)
     try:
@@ -989,6 +1069,19 @@ def main() -> int:
         since = parse_since()
         log.info("Run start -> %s%s", data_dir, f" (since {since.date()})" if since else "")
 
+        cooldown_path = data_dir / COOLDOWN_FILE
+        if cooldown_path.exists():
+            try:
+                retry_at = float(json.loads(cooldown_path.read_text())["retry_at"])
+                if not math.isfinite(retry_at):
+                    raise ValueError("non-finite retry_at")
+            except (ValueError, TypeError, KeyError) as exc:
+                raise RetryableError("invalid rate-limit cooldown file") from exc
+            if time.time() < retry_at:
+                log.warning("Rate-limit cooldown active for another %.1f seconds; no requests made",
+                            retry_at - time.time())
+                return 1
+
         token = get_access_token(client_id, client_secret)
         items = get_items(token)
         pending, rechecks, manifest_errors = select_work(items, since, data_dir, recheck_days)
@@ -1008,6 +1101,7 @@ def main() -> int:
         budget = DownloadBudget(max_downloads)
         deferred = []
         for item in batch:
+            queue_before = list(queue)
             if not args.dry_run:
                 # Save before the attempt: failures and cancellation must not
                 # monopolize the first slots. Unattempted orders stay in front.
@@ -1025,6 +1119,15 @@ def main() -> int:
                     recheck_days,
                     budget=budget,
                 )
+            except RateLimited:
+                if not args.dry_run:
+                    # Undo this attempt's rotation. Earlier deferred orders and
+                    # unattempted orders retain priority over completed checks.
+                    try:
+                        write_manifest_atomic(data_dir / QUEUE_FILE, {"orders": queue_before})
+                    except OSError as save_error:
+                        log.error("Could not restore queue after rate limiting: %s", save_error)
+                raise
             except Exception as exc:  # never let one order kill the whole run
                 status = "error"
                 log.exception("Unexpected error on %s: %s", item.get("code"), exc)
@@ -1039,6 +1142,13 @@ def main() -> int:
                  len(budget.orders), budget.limit, len(deferred))
         return 1 if manifest_errors or summary.get("partial-error") or summary.get("error") else 0
 
+    except RateLimited as exc:
+        try:
+            write_manifest_atomic(data_dir / COOLDOWN_FILE, {"retry_at": exc.retry_at})
+        except OSError as save_error:
+            log.error("Could not save rate-limit cooldown: %s", save_error)
+        log.error("%s; cooldown %.1f seconds", exc, max(0, exc.retry_at - time.time()))
+        return 1
     except (RetryableError, OSError, *NET_ERRORS) as exc:
         log.error("Run failed, will retry next run: %s", exc)
         return 1

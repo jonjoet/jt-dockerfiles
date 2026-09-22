@@ -132,6 +132,26 @@ class LateDeliveryTests(PreservedTestCase):
         self.assertEqual(self.run_order(), 'updated')
         self.assertEqual(self.manifest()['fetched_at'], json.loads(original)['fetched_at'])
 
+    def test_rate_limit_after_staging_keeps_snapshot_and_propagates_to_scheduler(self):
+        self.run_order()
+        original = (self.folder / '.complete').read_bytes()
+        self.add_illumina()
+        budget = fetch.DownloadBudget(5)
+        def download(url, *args, **kwargs):
+            if url.endswith('/reads'):
+                raise fetch.RateLimited(9999999999)
+            return self.download(url, *args, **kwargs)
+        with mock.patch.object(fetch, 'download_to_scratch', side_effect=download):
+            with self.assertRaises(fetch.RateLimited):
+                self.run_order(budget=budget)
+        self.assertEqual((self.folder / '.complete').read_bytes(), original)
+        self.assertFalse((self.folder / 'results/polished.fasta').exists())
+        self.assertFalse((self.folder / '.refresh.json').exists())
+        self.assertFalse((self.folder / '.results.partial').exists())
+        self.assertFalse((self.folder / '.reads.partial').exists())
+        self.assertEqual(budget.orders, {'HYBRID'})
+        self.assertEqual(list(self.scratch.iterdir()), [])
+
     def test_publication_interruption_retries_without_false_complete(self):
         self.run_order()
         self.add_illumina()
