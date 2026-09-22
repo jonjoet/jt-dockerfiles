@@ -30,8 +30,8 @@ WHY IT EXISTS / WHO SET IT UP
 HOW IT RUNS
     Invoked on a schedule by a systemd timer (plasmidsaurus-autofetch.timer),
     as a dedicated unprivileged user. See the setup guide for the install.
-    Each run handles at most MAX_DOWNLOADS_PER_RUN new orders, plus rechecks
-    every locally downloaded order in the watch window for late deliverables.
+    Each run handles at most MAX_DOWNLOADS_PER_RUN orders total, rotating
+    through new downloads and recent orders watched for late deliverables.
     It can also be run by hand for testing -- see the bottom of this header.
 
 HOW TO DISABLE
@@ -124,8 +124,8 @@ _min_free_env = os.getenv("PLASMIDSAURUS_MIN_FREE", str(512 * 1024 * 1024))
 # Which deliverables to fetch. pod5 is deliberately excluded.
 DATA_TYPES = ("results", "reads")
 
-# Cap per run so a first-time backfill doesn't hammer the API. Leftovers roll
-# over to the next scheduled run.
+# Shared cap for new downloads and rechecks. The persistent queue rotates
+# attempted orders to the back, including failures, so neither can block others.
 MAX_DOWNLOADS_PER_RUN = 5
 
 # Only consider orders completed on/after this date, if set (env override).
@@ -143,6 +143,7 @@ STALE_LOCK_AFTER = 6 * 3600
 
 COMPLETE_MARKER = ".complete"
 REFRESH_MARKER = ".refresh.json"
+QUEUE_FILE = "_autofetch.queue.json"
 LAYOUT_VERSION = 2
 MAX_ZIP_MEMBERS = 100_000
 
@@ -791,6 +792,36 @@ def select_work(items: list, since, data_dir: Path, recheck_days: int):
     return pending, rechecks
 
 
+def work_queue(pending: list, rechecks: list, data_dir: Path) -> list:
+    """Keep eligible queued orders in order, then append newly eligible ones.
+
+    Initially interleave new downloads and rechecks. Persisted order wins on
+    subsequent runs so fresh arrivals cannot jump ahead of waiting work.
+    """
+    try:
+        saved = json.loads((data_dir / QUEUE_FILE).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        saved = {"orders": []}
+    except (OSError, ValueError) as exc:
+        raise RetryableError(f"cannot read {QUEUE_FILE}: {exc}") from exc
+    if (not isinstance(saved, dict) or not isinstance(saved.get("orders"), list)
+            or any(not _usable_code(code) for code in saved["orders"])):
+        raise RetryableError(f"invalid scheduling queue in {QUEUE_FILE}")
+    arrivals = []
+    for index in range(max(len(pending), len(rechecks))):
+        for group in (pending, rechecks):
+            if index < len(group):
+                arrivals.append(group[index]["code"])
+    eligible = set(arrivals)
+    seen = set()
+    queue = []
+    for code in saved["orders"] + arrivals:
+        if code in eligible and code not in seen:
+            queue.append(code)
+            seen.add(code)
+    return queue
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Auto-fetch Plasmidsaurus results to the share.")
     parser.add_argument("--once", action="store_true", help="Run one pass (default).")
@@ -865,7 +896,9 @@ def main() -> int:
         token = get_access_token(client_id, client_secret)
         items = get_items(token)
         pending, rechecks = select_work(items, since, data_dir, recheck_days)
-        batch = pending[:MAX_DOWNLOADS_PER_RUN] + rechecks
+        queue = work_queue(pending, rechecks, data_dir)
+        by_code = {item["code"]: item for item in pending + rechecks}
+        batch = [by_code[code] for code in queue[:MAX_DOWNLOADS_PER_RUN]]
         if not batch:
             log.info("Nothing new to fetch (%d complete orders already on disk).", len(items))
             return 0
@@ -877,6 +910,11 @@ def main() -> int:
 
         summary = {}
         for item in batch:
+            if not args.dry_run:
+                # Save before the attempt: failures and cancellation must not
+                # monopolize the first slots. Unattempted orders stay in front.
+                queue.append(queue.pop(0))
+                write_manifest_atomic(data_dir / QUEUE_FILE, {"orders": queue})
             try:
                 status = process_item(
                     item,
@@ -893,12 +931,12 @@ def main() -> int:
             summary[status] = summary.get(status, 0) + 1
 
         log.info("Run summary: %s", ", ".join(f"{k}={v}" for k, v in sorted(summary.items())))
-        if len(pending) > MAX_DOWNLOADS_PER_RUN:
-            log.info("%d more new orders will be fetched on the next run.", len(pending) - MAX_DOWNLOADS_PER_RUN)
+        if len(queue) > len(batch):
+            log.info("%d order(s) deferred to later runs.", len(queue) - len(batch))
         return 1 if summary.get("partial-error") or summary.get("error") else 0
 
-    except NET_ERRORS as exc:
-        log.error("API error, will retry next run: %s", exc)
+    except (RetryableError, OSError, *NET_ERRORS) as exc:
+        log.error("Run failed, will retry next run: %s", exc)
         return 1
     finally:
         shutil.rmtree(lock_dir, ignore_errors=True)

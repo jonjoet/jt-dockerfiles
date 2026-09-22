@@ -286,8 +286,15 @@ the window, so crossing the cutoff cannot strand a partial update.
 The original `.complete` `fetched_at` anchors the window; receiving late files
 does not extend it. `PLASMIDSAURUS_SINCE` limits discovery of new orders only.
 Recent downloads remain watched even if the API no longer lists them or changes
-their status. Each timer pass handles at most five **new** orders plus **all**
-orders in the watch window. Large watch lists may need a less frequent timer.
+their status. Each timer pass handles **at most five orders total**, including
+new downloads, rechecks with no changes, and failed attempts. Remaining orders
+wait for later runs. `_autofetch.queue.json` in the data directory remembers
+the rotation: new downloads and rechecks are interleaved when first queued;
+waiting orders stay ahead of new arrivals. Each attempted order moves to the
+back before processing, including failures or cancellation. This prevents a
+repeatedly failing order from blocking the queue. Dry runs preview the next
+batch without advancing it. Larger watch lists take more timer passes to cycle
+through; the limit bounds order count, not elapsed time or downloaded bytes.
 
 The [official API examples](https://github.com/plasmidsaurus/api_docs/blob/main/examples/plasmidsaurus-api-intro.py)
 document results/reads ZIP links, but no per-file listing or revision field.
@@ -334,6 +341,22 @@ sudo systemctl start plasmidsaurus-autofetch.service
 sudo journalctl -u plasmidsaurus-autofetch.service -n 100 --no-pager
 sudo systemctl start plasmidsaurus-autofetch.timer
 ```
+
+The same procedure applies when upgrading from the first late-delivery release
+to the shared five-order limit. There is no additional migration or configuration
+change. The queue file is created automatically. The manual service start runs
+one batch of at most five orders; subsequent timer runs continue the rotation.
+
+To cancel a running batch before upgrading, stop the timer and service with
+the first two commands above. Ctrl-C on `systemctl start` may only stop waiting,
+so explicitly stop the service. Already completed orders remain available;
+unfinished work is retried on a later turn in the queue. Keep `.complete`,
+`.refresh.json` and the queue file. If interrupted during publication, that
+order temporarily has no `.complete` until its retry succeeds. The interrupted
+ZIP may need to be downloaded again. A terminated process can leave scratch
+files behind (especially with a custom scratch directory); these are not
+completed deliverables. The stale process lock is reclaimed automatically on
+the same host once its recorded process is gone.
 
 Keep any local contact/header customizations when installing. No unit change,
 new dependency or `daemon-reload` is needed. Recent older manifests are upgraded

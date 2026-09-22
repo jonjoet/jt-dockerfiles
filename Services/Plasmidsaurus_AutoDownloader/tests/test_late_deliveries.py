@@ -228,7 +228,7 @@ class LateDeliveryTests(PreservedTestCase):
         self.assertEqual(self.run_order(), 'partial-error')
         self.assertEqual(outside.read_bytes(), b'keep')
 
-    def test_main_caps_new_orders_without_starving_rechecks(self):
+    def test_main_caps_total_and_rotates_across_runs(self):
         self.run_order()
         items = [{'code': 'NEW' + str(i), 'status': 'complete'} for i in range(7)]
         with mock.patch.dict(os.environ, {'PLASMIDSAURUS_CLIENT_ID': 'test', 'PLASMIDSAURUS_CLIENT_SECRET': 'test'}), \
@@ -238,8 +238,12 @@ class LateDeliveryTests(PreservedTestCase):
              mock.patch.object(fetch, 'get_items', return_value=items), \
              mock.patch.object(fetch, 'process_item', return_value='done') as process:
             self.assertEqual(fetch.main(), 0)
-        self.assertEqual([call.args[0]['code'] for call in process.call_args_list],
-                         ['NEW0', 'NEW1', 'NEW2', 'NEW3', 'NEW4', 'HYBRID'])
+            first = [call.args[0]['code'] for call in process.call_args_list]
+            process.reset_mock()
+            self.assertEqual(fetch.main(), 0)
+            second = [call.args[0]['code'] for call in process.call_args_list]
+        self.assertEqual(first, ['NEW0', 'HYBRID', 'NEW1', 'NEW2', 'NEW3'])
+        self.assertEqual(second, ['NEW4', 'NEW5', 'NEW6', 'NEW0', 'HYBRID'])
         self.assertFalse((self.data / '_autofetch.lock').exists())
 
     def test_bad_recheck_configuration_fails_before_api(self):
