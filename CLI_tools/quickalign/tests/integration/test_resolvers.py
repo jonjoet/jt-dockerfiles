@@ -21,7 +21,16 @@ class SubprocessRunner:
     ]
 
     def run(self, step, argv, stdout_path=None):
-        return subprocess.run(argv, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(argv, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        config_path = Path(argv[argv.index("--target") + 1])
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["resolverShapeProbe"] = {
+            "empty": [],
+            "singleton": [{"value": "only"}],
+            "nested": [["one"], []],
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        return result
 
 
 @pytest.fixture
@@ -75,6 +84,23 @@ def _assert_local_locations(path: Path, root: Path) -> None:
     assert all(item.is_file() and item.is_relative_to(root) for item in found)
 
 
+def _normalize_local_locations(value, root: Path):
+    if isinstance(value, list):
+        return [_normalize_local_locations(item, root) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if value.get("locationType") == "LocalPathLocation":
+        local_path = Path(value["localPath"])
+        result = {
+            key: _normalize_local_locations(item, root)
+            for key, item in value.items()
+            if key not in {"locationType", "localPath"}
+        }
+        result.update(locationType="UriLocation", uri=local_path.relative_to(root).as_posix())
+        return result
+    return {key: _normalize_local_locations(item, root) for key, item in value.items()}
+
+
 @pytest.mark.parametrize("launcher", ["resolve-local.sh", "resolve-local.ps1"])
 def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: Path, launcher: str):
     # A literal backslash is valid on Linux and covered by the POSIX resolver,
@@ -93,5 +119,13 @@ def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: 
     else:
         argv = ["/bin/sh", str(destination / launcher)]
     subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True, text=True)
-    _assert_local_locations(destination / "portable.local.jbrowse", destination)
+    local_path = destination / "portable.local.jbrowse"
+    _assert_local_locations(local_path, destination)
+    portable = json.loads((destination / "config.json").read_text(encoding="utf-8"))
+    local = json.loads(local_path.read_text(encoding="utf-8-sig"))
+    assert _normalize_local_locations(local, destination) == portable
+    probe = local["resolverShapeProbe"]
+    assert probe["empty"] == []
+    assert probe["singleton"] == [{"value": "only"}]
+    assert probe["nested"] == [["one"], []]
     assert validate_bundle(destination)["sample_name"] == "fixture"

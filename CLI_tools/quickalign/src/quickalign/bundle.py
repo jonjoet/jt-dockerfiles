@@ -217,8 +217,14 @@ $Target = Join-Path $Root ($Stem + '.local.jbrowse')
 
 function Convert-Node($Node) {
     if ($null -eq $Node -or $Node -is [string] -or $Node -is [ValueType]) { return $Node }
-    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [PSCustomObject]) {
-        return @($Node | ForEach-Object { Convert-Node $_ })
+    if ($Node -is [System.Array]) {
+        $Items = [System.Collections.Generic.List[object]]::new()
+        foreach ($Item in $Node) {
+            [object]$Converted = Convert-Node $Item
+            $Items.Add($Converted)
+        }
+        # Unary comma prevents the success pipeline from unrolling the result.
+        return ,$Items.ToArray()
     }
     $Properties = @($Node.PSObject.Properties)
     $UriProperty = $Properties | Where-Object Name -eq 'uri'
