@@ -141,3 +141,12 @@ def test_malformed_metadata_is_not_discovered(tmp_path, field, value):
     data[field] = value
     jobs.atomic_json(job.output_dir / 'job.json', data)
     assert jobs.discover_jobs(output) == []
+
+
+def test_memory_metadata_default_override_and_effective_limit(monkeypatch):
+    monkeypatch.delenv('QUICKALIGN_MEMORY', raising=False)
+    monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: '2147483648\n')
+    assert jobs.resource_metadata() == {'configured_memory': '256g', 'effective_memory_bytes': 2147483648}
+    monkeypatch.setenv('QUICKALIGN_MEMORY', '2g')
+    monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: 'max\n')
+    assert jobs.resource_metadata() == {'configured_memory': '2g', 'effective_memory_bytes': None}

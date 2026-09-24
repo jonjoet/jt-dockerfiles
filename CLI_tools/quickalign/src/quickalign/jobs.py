@@ -23,6 +23,25 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def resource_metadata():
+    """Report operator configuration separately from the effective cgroup limit."""
+    limit = None
+    for filename in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(filename).read_text(encoding="ascii").strip()
+            if raw == "max":
+                break
+            candidate = int(raw)
+            # cgroup v1 reports a near-LONG_MAX sentinel for no limit.
+            if 0 < candidate < (1 << 60):
+                limit = candidate
+            break
+        except (OSError, ValueError):
+            continue
+    return {"configured_memory": os.environ.get("QUICKALIGN_MEMORY", "256g"),
+            "effective_memory_bytes": limit}
+
+
 def new_job_id():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:12]
 
@@ -140,6 +159,7 @@ def reserve_job(job_id, output_dir, work_root, run_spec):
                       output_dir / f"{run_spec.name}.jbrowse", run_spec)
     initial = {"schema_version": 1, "job_id": job_id, "status": "running",
                "origin": run_spec.origin, "keep_work": run_spec.keep_work,
+               "container_memory": resource_metadata(),
                "name": run_spec.name, "started": timestamp(), "updated": timestamp(),
                "output_dir": str(output_dir), "work_dir": str(work), "work_reserved": False,
                "warnings": [], "tracks": [], "commands": [], "export_status": "not_requested",
