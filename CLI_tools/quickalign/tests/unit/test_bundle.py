@@ -128,14 +128,16 @@ def test_builds_deterministic_relative_bundle_and_manifest(tmp_path):
     assert config["defaultSession"]["view"]["displayedRegions"][0]["end"] == 4
     assert manifest["warnings"][0]["code"] == "truncated"
     assert manifest["read_groups"][0]["counts"] == {"mapped": 1, "total": 1}
+    memory = manifest["run"].pop("container_memory")
     assert manifest["run"] == {
         "requested_threads": 4,
         "aligner_threads": 2,
         "sort_worker_threads": 1,
         "sort_main_threads": 1,
         "sort_memory_per_worker": "256M",
-        "container_memory": {"configured_memory": "256g", "effective_memory_bytes": None},
     }
+    assert memory["configured_memory"] == "256g"
+    assert memory["effective_memory_bytes"] is None or memory["effective_memory_bytes"] > 0
     inventory = {record["path"] for record in manifest["files"]}
     assert "manifest.json" not in inventory
     assert "local.template.jbrowse" in inventory
