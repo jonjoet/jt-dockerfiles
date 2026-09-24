@@ -8,6 +8,12 @@ contract. Run `tests/verify.sh` for Docker-only automated verification; native
 Windows launcher execution and visual JBrowse Desktop checks remain manual
 release gates as described below.
 
+The user's post-review decisions and next implementation pass are recorded in
+[REVIEW_RESOLUTION_PLAN.md](REVIEW_RESOLUTION_PLAN.md). That plan supersedes
+conflicting validation, resolver, and download details here; the user will
+perform native Windows testing. Other review findings are deferred in
+[GitHub issue #8](https://github.com/jonjoet/jt-dockerfiles/issues/8).
+
 ## Goal
 
 Build a Docker-first command-line tool with a thin Streamlit interface that:
