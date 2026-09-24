@@ -5,6 +5,7 @@ import gzip
 import csv
 import re
 import zlib
+import math
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -191,6 +192,7 @@ def _validate_annotation(path: Path, contigs: dict[str, int]) -> None:
                     raise ValidationError(
                         f"Annotation line {line_number} coordinates {start}-{end} are outside {seqid} (length {contigs[seqid]})"
                     )
+                validate_gff_fields(fields, line_number)
                 feature_count += 1
     except ValidationError:
         raise
@@ -198,6 +200,21 @@ def _validate_annotation(path: Path, contigs: dict[str, int]) -> None:
         raise ValidationError(f"Could not read annotation {path.name}: {exc}") from exc
     if feature_count == 0:
         raise ValidationError("Annotation contains no feature rows before ##FASTA")
+
+
+def validate_gff_fields(fields: list[str], line_number: int) -> None:
+    """Validate GFF score, strand, and phase without changing attributes."""
+    score = fields[5]
+    if score != ".":
+        try:
+            if not math.isfinite(float(score)):
+                raise ValueError
+        except ValueError as exc:
+            raise ValidationError(f"Annotation line {line_number} has an invalid score") from exc
+    if fields[6] not in {"+", "-", ".", "?"}:
+        raise ValidationError(f"Annotation line {line_number} has an invalid strand")
+    if fields[7] not in {"0", "1", "2", "."}:
+        raise ValidationError(f"Annotation line {line_number} has an invalid phase")
 
 
 def normalize_mate_name(header: bytes) -> tuple[bytes, int | None]:

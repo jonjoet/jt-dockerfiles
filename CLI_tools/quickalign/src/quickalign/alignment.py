@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import re
+import os
 from pathlib import Path
 
 from .commands import (
@@ -29,10 +30,14 @@ def _pipeline(
     with align_stderr_path.open("wb") as align_err, sort_stderr_path.open("wb") as sort_err:
         try:
             aligner = subprocess.Popen(
-                align, stdin=align_stdin, stdout=subprocess.PIPE, stderr=align_err, env=runner.env
+                align, stdin=align_stdin, stdout=subprocess.PIPE, stderr=align_err,
+                env=runner.env, cwd=runner.job.work,
             )
             assert aligner.stdout is not None
-            sorter = subprocess.Popen(sort, stdin=aligner.stdout, stdout=subprocess.DEVNULL, stderr=sort_err, env=runner.env)
+            sorter = subprocess.Popen(
+                sort, stdin=aligner.stdout, stdout=subprocess.DEVNULL, stderr=sort_err,
+                env=runner.env, cwd=runner.job.work,
+            )
             aligner.stdout.close()
             if records is not None:
                 assert aligner.stdin is not None
@@ -93,11 +98,11 @@ def _pipeline(
         raise CommandError(f"Alignment pipeline {step} did not start both processes", logs=[align_stderr_path, sort_stderr_path])
     runner.record({
         "step": f"{step}-align", "argv": align, "returncode": align_code,
-        "stderr": str(align_stderr_path), "stdout": "pipe:sort",
+        "cwd": str(runner.job.work), "stderr": str(align_stderr_path), "stdout": "pipe:sort",
     })
     runner.record({
         "step": f"{step}-sort", "argv": sort, "returncode": sort_code,
-        "stderr": str(sort_stderr_path), "stdin": "pipe:align",
+        "cwd": str(runner.job.work), "stderr": str(sort_stderr_path), "stdin": "pipe:align",
     })
     if stream_error is not None:
         raise stream_error
@@ -122,6 +127,14 @@ def _parse_flagstat(text: str) -> tuple[int, int]:
         elif description.startswith("mapped ("):
             mapped = count
     return mapped, total
+
+
+def _relative_argument(path: Path, work: Path) -> Path:
+    """Make filesystem argv portable in tool-generated BAM @PG headers."""
+    value = os.path.relpath(path, work)
+    if value.startswith("-"):
+        value = f"./{value}"
+    return Path(value)
 
 
 def _verify_bam(runner, track_id: str, bam: Path, expected_rg: str, threads: int, flagstat: Path) -> tuple[int, int]:
@@ -162,13 +175,29 @@ def build_alignments(job: ReservedJob, prepared: PreparedInputs, runner) -> list
         bam = alignments_dir / f"{track_id}.bam"
         bai = Path(f"{bam}.bai")
         flagstat = alignments_dir / f"{track_id}.flagstat.txt"
-        align = align_argv(group, track_id, reference, bwa_prefix, align_threads)
+        relative_reference = _relative_argument(reference, job.work)
+        relative_bwa_prefix = _relative_argument(bwa_prefix, job.work)
+        relative_read1 = _relative_argument(group.read1, job.work)
+        relative_read2 = _relative_argument(group.read2, job.work) if group.read2 is not None else None
+        display_kwargs = {}
+        if "read1_display" in type(group).__dataclass_fields__:
+            display_kwargs = {
+                "read1_display": getattr(group, "read1_display", None),
+                "read2_display": getattr(group, "read2_display", None),
+            }
+        command_group = type(group)(
+            group.label, group.technology, group.layout, relative_read1, relative_read2, **display_kwargs,
+        )
+        align = align_argv(command_group, track_id, relative_reference, relative_bwa_prefix, align_threads)
         records = None
         stream_warnings: list[InputWarning] = []
         if group.layout == "single":
             records, stream_warnings = validating_unpaired_records(group.read1)
             align[-1] = "-"
-        sort = sort_argv(bam, sort_dir / track_id, sort_threads, job.spec.sort_memory)
+        sort = sort_argv(
+            _relative_argument(bam, job.work), _relative_argument(sort_dir / track_id, job.work),
+            sort_threads, job.spec.sort_memory,
+        )
         try:
             _pipeline(runner, track_id, align, sort, records)
         finally:

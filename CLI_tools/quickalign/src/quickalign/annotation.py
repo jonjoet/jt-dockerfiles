@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .commands import bgzip_argv, tabix_argv
 from .errors import ValidationError
+from .inputs import validate_gff_fields
 from .models import PreparedInputs, ReservedJob
 
 
@@ -45,6 +46,7 @@ def normalize_annotation(source: Path, destination: Path, contigs: dict[str, int
                     raise ValidationError(f"Annotation line {input_index + 1} has invalid coordinates") from exc
                 if start < 1 or end < start or end > contigs[seqid]:
                     raise ValidationError(f"Annotation coordinates {start}-{end} are outside {seqid}")
+                validate_gff_fields(fields, input_index + 1)
                 features.append((order[seqid], start, end, input_index, "\t".join(fields)))
     except ValidationError:
         raise
