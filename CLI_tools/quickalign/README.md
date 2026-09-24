@@ -74,6 +74,9 @@ Interleaved	illumina	interleaved	interleaved.fastq.gz
 Long reads	nanopore	single	nanopore.fastq.gz	
 ```
 
+Manifest source paths are used to open the reads. Portable metadata and warnings
+use their basenames; explicit track labels are preserved.
+
 Use `--keep-work` only when intermediate files are needed for diagnosis.
 Otherwise job-scoped work is removed after success or failure. The output job
 directory, logs, status metadata, and failed partial bundle remain available
@@ -108,8 +111,11 @@ separate. Do not make `/outputs` or `/work` a child of the input mount.
 The mounted browser exposes only roots under `/inputs`, rejects hidden paths,
 traversal, and escaping symlinks, and revalidates selections before a job.
 Mounted files are preferred for large data. Upload defaults are 16 files,
-128 MiB per file, and 512 MiB total. Browser ZIP downloads default to 128 MiB;
-larger completed bundles remain in the output mount. Configure these with
+128 MiB per file, and 512 MiB total. Browser ZIP downloads default to 128 MiB.
+Small ZIPs are loaded only when Download ZIP is clicked, with the size limit
+checked again at that time. Large bundles and ZIPs remain accessible in the
+output mount; the results show their relative paths. Use CLI `--zip` for a
+disk-based export of a large bundle. Configure the limits with
 `QUICKALIGN_MAX_UPLOAD_FILES`, `QUICKALIGN_MAX_UPLOAD_MIB`,
 `QUICKALIGN_MAX_UPLOAD_TOTAL_MIB`, and `QUICKALIGN_MAX_DOWNLOAD_MIB`.
 `QUICKALIGN_INPUT_ROOTS` may contain platform-path-separator-delimited roots
@@ -123,9 +129,14 @@ BWA-MEM2 reference indexing can require substantially more memory than using
 the index. The environment variable records the configured ceiling; Docker
 enforces it. It does not constrain directly launched Python processes.
 
-The service executes one synchronous job at a time. Job history comes from
-validated metadata under `/outputs`; warnings and zero-mapped tracks remain
-visible. A recoverably truncated unpaired FASTQ can complete with prominent
+The service executes one synchronous job at a time. Job history uses bounded
+metadata and required-file existence/size checks under `/outputs`; warnings and
+zero-mapped tracks remain visible. Listing results, restarting the service, and
+requesting export do not rehash BAMs. Extra files such as `.DS_Store` or generated
+local configurations do not invalidate a completed result. These availability
+checks do not detect same-size payload corruption.
+
+A recoverably truncated unpaired FASTQ can complete with prominent
 warnings and only its complete decoded records. Malformed records, paired-read
 problems, compressed-data corruption, and tool/index failures remain fatal.
 Warnings travel in `job.json`, the bundle manifest and README files, CLI
@@ -134,6 +145,13 @@ processed; these alignments may be incomplete.** Truncated gzip additionally
 warns that its final checksum was unavailable and recovered reads have not
 passed that integrity check. CRC mismatch, invalid trailers, and DEFLATE errors
 are fatal even when earlier reads produced valid BAM records.
+
+A final bare `@` without a newline is an incomplete single-read record: preceding
+complete records are retained with a truncation warning. Trailing blank lines at
+EOF are accepted for single and paired inputs; blank lines between records are
+malformed. Paired and interleaved reads still reject incomplete records, unequal
+counts, and incompatible mate identifiers. A complete empty header is invalid,
+and an input with no usable complete reads fails.
 
 The service has no authentication. Expose it remotely only through a trusted
 private network or an authenticated TLS reverse proxy. One Streamlit process
@@ -152,22 +170,30 @@ Generate a Desktop configuration after every move:
 cd NAME.jbrowse
 ./resolve-local.sh
 # If executable permissions were lost on extraction:
-sh resolve-local.sh
+bash resolve-local.sh
 # Open NAME.local.jbrowse in JBrowse Desktop.
 ```
 
-The POSIX resolver requires a POSIX shell and Python 3. The PowerShell resolver
-uses PowerShell 7 and is launched directly with `resolve-local.ps1`. On Windows,
-`resolve-local.cmd` is a convenience launcher using `-NoProfile` and
-`-ExecutionPolicy Bypass`. Browser-downloaded archives or scripts may carry
+The shell resolver requires Bash, which is available on macOS and commonly on
+Linux; no Python installation is needed. On Windows, `resolve-local.cmd` prefers
+PowerShell 7 (`pwsh`) and falls back to Windows PowerShell (`powershell.exe`),
+using `-NoProfile` and `-ExecutionPolicy Bypass`. You can also run
+`resolve-local.ps1` directly. Browser-downloaded archives or scripts may carry
 Windows Mark-of-the-Web; use the file's Properties **Unblock** control when
 appropriate. If double-clicking the `.cmd` file is restricted by local policy,
 open PowerShell, change into the bundle directory, and run the `.ps1` file.
 
+The initial view shows the reference, annotation, and first BAM on the first
+contig, bounded to 100,000 bases. Additional BAM tracks remain available in the
+track selector. `local.template.jbrowse` contains a bundle-root token, including
+in text-index locations; `config.json` retains relative locations.
+
 The generated `.local.jbrowse` contains absolute paths for its current location
-and is deliberately excluded from manifest hashing and ZIP export. The portable
-files remain covered by SHA-256 and size checks in `manifest.json`. Resolver
-scripts replace the generated file safely when rerun.
+and is deliberately excluded from manifest hashing and ZIP export. Resolvers
+write through a temporary file and leave `config.json` unchanged. File sizes and
+SHA-256 values in `manifest.json` record creation-time provenance; normal
+availability checks do not recompute those hashes. ZIP export remains a separate
+disk operation, including ZIP CRC verification.
 
 ## Tests
 
@@ -180,8 +206,11 @@ PowerShell resolver suite entirely in Docker:
 
 The script builds the product and a separate digest-pinned PowerShell test
 image, runs as the caller's UID with networking disabled and a 4 GB ceiling,
-and preserves logs, JUnit XML, fixture outputs, and a provenance `RUN.txt`
-under `.verification/`. PowerShell is absent from the product image.
+and preserves the tested source, logs, JUnit XML, fixture outputs, and a provenance
+`RUN.txt` under `.verification/`. It also runs the installed CLI and Streamlit
+launcher without mounting source over the package, exercising a real build,
+visible truncation warnings, and ZIP export. PowerShell is absent from the
+product image.
 
 `tests/fixtures/make_fixture.py DESTINATION` creates deterministic mixed-
 technology inputs for container acceptance runs. Native execution of
