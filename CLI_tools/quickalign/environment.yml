@@ -1,0 +1,15 @@
+name: base
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12.12
+  - pip=25.2
+  - setuptools=80.9.0
+  - streamlit=1.59.2
+  - bwa-mem2=2.3
+  - minimap2=2.31
+  - samtools=1.22.1
+  - htslib=1.22.1
+  - nodejs=22.23.2
+  - pytest=8.4.2

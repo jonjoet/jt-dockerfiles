@@ -1,0 +1,62 @@
+services:
+  quickalign:
+    build: .
+    image: quickalign:0.1.0
+    restart: unless-stopped
+    init: true
+    user: "${QUICKALIGN_UID:-1001}:${QUICKALIGN_GID:-1001}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: "${QUICKALIGN_CPUS:-4}"
+    mem_limit: "${QUICKALIGN_MEMORY:-256g}"
+    pids_limit: 512
+    ports:
+      - "${QUICKALIGN_BIND:-127.0.0.1}:${QUICKALIGN_PORT:-8501}:8501"
+    volumes:
+      - type: bind
+        source: "${QUICKALIGN_INPUTS:?Set QUICKALIGN_INPUTS to an existing directory}"
+        target: /inputs
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${QUICKALIGN_OUTPUTS:?Set QUICKALIGN_OUTPUTS to an existing directory}"
+        target: /outputs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${QUICKALIGN_WORK:?Set QUICKALIGN_WORK to an existing directory}"
+        target: /work
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    environment:
+      HOME: /tmp/home
+      XDG_CACHE_HOME: /tmp/cache
+      XDG_CONFIG_HOME: /tmp/config
+      QUICKALIGN_MEMORY: "${QUICKALIGN_MEMORY:-256g}"
+      QUICKALIGN_INPUT_ROOTS: "${QUICKALIGN_INPUT_ROOTS:-/inputs}"
+      QUICKALIGN_MAX_THREADS: "${QUICKALIGN_MAX_THREADS:-4}"
+      QUICKALIGN_MAX_UPLOAD_FILES: "${QUICKALIGN_MAX_UPLOAD_FILES:-16}"
+      QUICKALIGN_MAX_UPLOAD_MIB: "${QUICKALIGN_MAX_UPLOAD_MIB:-128}"
+      QUICKALIGN_MAX_UPLOAD_TOTAL_MIB: "${QUICKALIGN_MAX_UPLOAD_TOTAL_MIB:-512}"
+      QUICKALIGN_MAX_DOWNLOAD_MIB: "${QUICKALIGN_MAX_DOWNLOAD_MIB:-128}"
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "${QUICKALIGN_MAX_UPLOAD_MIB:-128}"
+      STREAMLIT_SERVER_MAX_MESSAGE_SIZE: "${QUICKALIGN_MAX_UPLOAD_MIB:-128}"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    entrypoint:
+      - /usr/local/bin/_entrypoint.sh
+      - streamlit
+      - run
+      - /opt/quickalign/streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+    command: []
+    healthcheck:
+      test: [CMD, /opt/conda/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

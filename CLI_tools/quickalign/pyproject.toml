@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickalign"
+version = "0.1.0"
+description = "Align mixed read groups into portable JBrowse Desktop bundles"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["streamlit==1.59.2"]
+test = ["pytest==8.4.2"]
+
+[project.scripts]
+quickalign = "quickalign.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quickalign = ["assets/*", "templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

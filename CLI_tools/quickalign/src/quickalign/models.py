@@ -10,6 +10,8 @@ class ReadGroup:
     layout: str
     read1: Path
     read2: Path | None = None
+    read1_display: str | None = None
+    read2_display: str | None = None
 
     def __post_init__(self):
         if not self.label.strip():
@@ -55,6 +57,8 @@ class PreparedInputs:
     annotation: Path
     read_groups: tuple[ReadGroup, ...]
     contigs: dict[str, int] = field(default_factory=dict)
+    reference_display: str | None = None
+    annotation_display: str | None = None
 
 @dataclass(frozen=True)
 class ReservedJob:
