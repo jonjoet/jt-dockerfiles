@@ -100,7 +100,8 @@ def _replace_config(job, config):
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def test_builds_deterministic_relative_bundle_and_manifest(tmp_path):
+def test_builds_deterministic_relative_bundle_and_manifest(tmp_path, monkeypatch):
+    monkeypatch.delenv('QUICKALIGN_MEMORY', raising=False)
     job, runner = _build(tmp_path)
     manifest = validate_bundle(job.partial)
 
