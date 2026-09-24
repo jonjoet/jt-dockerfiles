@@ -12,6 +12,7 @@ import uuid
 import zipfile
 
 from .errors import ValidationError
+from . import __version__
 from .models import JobResult, ReservedJob
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
@@ -158,6 +159,8 @@ def reserve_job(job_id, output_dir, work_root, run_spec):
                       output_dir / f"{run_spec.name}.jbrowse.partial",
                       output_dir / f"{run_spec.name}.jbrowse", run_spec)
     initial = {"schema_version": 1, "job_id": job_id, "status": "running",
+               "application_version": __version__,
+               "image_reference": os.environ.get("QUICKALIGN_IMAGE_REFERENCE", "direct-python"),
                "origin": run_spec.origin, "keep_work": run_spec.keep_work,
                "container_memory": resource_metadata(),
                "name": run_spec.name, "started": timestamp(), "updated": timestamp(),

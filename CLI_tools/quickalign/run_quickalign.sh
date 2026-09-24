@@ -17,6 +17,7 @@ exec docker run --rm --init --user "$(id -u):$(id -g)" \
     --memory "${QUICKALIGN_MEMORY:-256g}" --cpus "${QUICKALIGN_CPUS:-4}" --pids-limit 512 \
     --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
     --env "QUICKALIGN_MEMORY=${QUICKALIGN_MEMORY:-256g}" \
+    --env "QUICKALIGN_IMAGE_REFERENCE=$image" \
     --mount "type=bind,source=$QUICKALIGN_INPUTS,target=/inputs,readonly" \
     --mount "type=bind,source=$QUICKALIGN_OUTPUTS,target=/outputs" \
     --mount "type=bind,source=$QUICKALIGN_WORK,target=/work" \
