@@ -136,11 +136,12 @@ def test_paired_truncation_remains_strict(tmp_path, layout):
     assert not metadata['commands']
 
 
-def test_cli_zip_failure_is_nonzero_but_bundle_accessible(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('truncated', [False, True])
+def test_cli_zip_failure_is_nonzero_but_bundle_accessible(tmp_path, monkeypatch, capsys, truncated):
     from quickalign.cli import main
     reference, annotation, record = make_inputs(tmp_path / 'inputs')
     reads = tmp_path / 'inputs' / 'reads.fastq'
-    reads.write_bytes(record)
+    reads.write_bytes(record + (b'@unfinished\nACGT\n+\nII' if truncated else b''))
     def fail_zip(*args, **kwargs):
         raise OSError('injected ZIP disk failure')
     monkeypatch.setattr(jobs.zipfile, 'ZipFile', fail_zip)
@@ -152,4 +153,7 @@ def test_cli_zip_failure_is_nonzero_but_bundle_accessible(tmp_path, monkeypatch,
     assert data['status'] == 'completed' and data['export_status'] == 'failed'
     assert jobs.completed_bundle(out).is_dir()
     assert jobs.downloadable_archive(out, 10**9) is None
-    assert 'Completed bundle remains available' in capsys.readouterr().err
+    diagnostic = capsys.readouterr().err
+    assert 'Completed bundle remains available' in diagnostic
+    if truncated:
+        assert TRUNCATION_TEXT in diagnostic

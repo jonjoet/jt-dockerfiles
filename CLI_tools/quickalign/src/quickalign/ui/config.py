@@ -46,14 +46,16 @@ class UiConfig:
                       env.get('QUICKALIGN_INPUT_ROOTS', str(base)).split(os.pathsep) if p))
         if not roots or any(not r.is_relative_to(base) for r in roots):
             raise ValidationError('Input roots must be beneath the input base')
+        if not all(os.access(p, os.R_OK | os.X_OK) for p in roots):
+            raise ValidationError('Input roots must be readable and searchable')
         output = directory(env.get('QUICKALIGN_OUTPUT_ROOT', '/outputs'), 'Output root')
         work = directory(env.get('QUICKALIGN_WORK_ROOT', '/work'), 'Work root')
         all_roots = [base, output, work]
         if any(a.is_relative_to(b) or b.is_relative_to(a)
                for i, a in enumerate(all_roots) for b in all_roots[i + 1:]):
             raise ValidationError('Input, output and work mounts must be separate')
-        if not all(os.access(p, os.W_OK) for p in (output, work)):
-            raise ValidationError('Output and work mounts must be writable')
+        if not all(os.access(p, os.W_OK | os.X_OK) for p in (output, work)):
+            raise ValidationError('Output and work mounts must be writable and searchable')
         per_file = positive(env, 'QUICKALIGN_MAX_UPLOAD_MIB', 128)
         server_limit = positive(env, 'STREAMLIT_SERVER_MAX_UPLOAD_SIZE', 128)
         if per_file > server_limit:

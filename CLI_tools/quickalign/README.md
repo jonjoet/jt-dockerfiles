@@ -28,7 +28,7 @@ export QUICKALIGN_WORK="$PWD/quickalign-work"
 mkdir -p "$QUICKALIGN_OUTPUTS" "$QUICKALIGN_WORK"
 
 ./run_quickalign.sh build /inputs/reference.fasta /inputs/annotation.gff3 \
-  --outdir /outputs \
+  --outdir /outputs/experiment-1 \
   --workdir /work \
   --name experiment-1 \
   --illumina-single /inputs/single.fastq.gz \
@@ -41,8 +41,26 @@ mkdir -p "$QUICKALIGN_OUTPUTS" "$QUICKALIGN_WORK"
 `run_quickalign.sh` builds the image if needed, runs as the caller's UID/GID,
 and applies the same read-only-root and resource restrictions as Compose. Paths
 in arguments are container paths under `/inputs`, `/outputs`, and `/work`.
-Without the wrapper, use equivalent `docker run` mounts and run
-`quickalign build ...` through the image entrypoint.
+The `--outdir` job directory must not already exist; its mounted parent does.
+Keep CLI output/work roots separate from a running UI service. Without the
+wrapper, a direct Docker invocation is:
+
+```sh
+docker run --rm --init --user "$(id -u):$(id -g)" \
+  --memory 256g --env QUICKALIGN_MEMORY=256g \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
+  --mount "type=bind,source=$QUICKALIGN_INPUTS,target=/inputs,readonly" \
+  --mount "type=bind,source=$QUICKALIGN_OUTPUTS,target=/outputs" \
+  --mount "type=bind,source=$QUICKALIGN_WORK,target=/work" \
+  quickalign:0.1.0 build /inputs/reference.fasta /inputs/annotation.gff3 \
+  --outdir /outputs/another-run --workdir /work --nanopore /inputs/reads.fastq
+```
+
+The reference must be plain FASTA; compressed FASTQ and GFF/GFF3 are supported.
+BAI/TBI indexes support contigs up to 536,870,912 bases (2^29) each. The limit is
+per contig, not whole-genome size; GRCh38 fits. Longer contigs fail before
+alignment or BWA indexing. CSI indexes are outside version 1.
 
 Direct read options may be repeated. They are mutually exclusive with
 `--reads-manifest`. A manifest is a tab-separated UTF-8 file whose paths are
@@ -101,12 +119,28 @@ Compose and the CLI wrapper default `QUICKALIGN_MEMORY` to `256g`, an upper
 ceiling intended for large real datasets rather than a reservation. Set a
 smaller value for development and synthetic tests, for example
 `QUICKALIGN_MEMORY=4g`. Also size `--sort-memory` with its worker count in mind.
+BWA-MEM2 reference indexing can require substantially more memory than using
+the index. The environment variable records the configured ceiling; Docker
+enforces it. It does not constrain directly launched Python processes.
 
 The service executes one synchronous job at a time. Job history comes from
 validated metadata under `/outputs`; warnings and zero-mapped tracks remain
 visible. A recoverably truncated unpaired FASTQ can complete with prominent
 warnings and only its complete decoded records. Malformed records, paired-read
 problems, compressed-data corruption, and tool/index failures remain fatal.
+Warnings travel in `job.json`, the bundle manifest and README files, CLI
+diagnostics, and current/previous UI results: **Some input reads could not be
+processed; these alignments may be incomplete.** Truncated gzip additionally
+warns that its final checksum was unavailable and recovered reads have not
+passed that integrity check. CRC mismatch, invalid trailers, and DEFLATE errors
+are fatal even when earlier reads produced valid BAM records.
+
+The service has no authentication. Expose it remotely only through a trusted
+private network or an authenticated TLS reverse proxy. One Streamlit process
+owns its output/work roots; shared roots across CLI runs or other UI containers
+are unsupported. Refreshing or disconnecting the browser does not cancel a
+server-side build. Restarted running jobs appear as interrupted, and known
+orphan work is reconciled once at startup unless keep-work was selected.
 
 ## Open a bundle in JBrowse Desktop
 
@@ -117,6 +151,8 @@ Generate a Desktop configuration after every move:
 ```sh
 cd NAME.jbrowse
 ./resolve-local.sh
+# If executable permissions were lost on extraction:
+sh resolve-local.sh
 # Open NAME.local.jbrowse in JBrowse Desktop.
 ```
 
@@ -135,25 +171,17 @@ scripts replace the generated file safely when rerun.
 
 ## Tests
 
-Build the normal tools image and run tests entirely in Docker:
+Run the complete unit, actual-tool integration, Streamlit AppTest, and shell/
+PowerShell resolver suite entirely in Docker:
 
 ```sh
-docker build --target tools -t quickalign:tools .
-docker run --rm -u "$(id -u):$(id -g)" \
-  -v "$PWD:/project" -w /project -e PYTHONPATH=/project/src \
-  quickalign:tools pytest -q
+./tests/verify.sh
 ```
 
-The Windows resolver suite uses a separate test-only image; PowerShell is not
-added to the runtime image. Its Microsoft base is pinned by digest:
-
-```sh
-docker build -f tests/resolver/Dockerfile -t quickalign:resolver-test .
-docker run --rm --read-only -u "$(id -u):$(id -g)" \
-  --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
-  -v "$PWD:/project" -w /project -e PYTHONPATH=/project/src \
-  quickalign:resolver-test pytest -q tests/integration/test_resolvers.py
-```
+The script builds the product and a separate digest-pinned PowerShell test
+image, runs as the caller's UID with networking disabled and a 4 GB ceiling,
+and preserves logs, JUnit XML, fixture outputs, and a provenance `RUN.txt`
+under `.verification/`. PowerShell is absent from the product image.
 
 `tests/fixtures/make_fixture.py DESTINATION` creates deterministic mixed-
 technology inputs for container acceptance runs. Native execution of

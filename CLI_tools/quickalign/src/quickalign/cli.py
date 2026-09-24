@@ -83,6 +83,8 @@ def main(argv=None):
             try:
                 bundle = jobs.completed_bundle(job.output_dir)
                 print(f'Completed bundle remains available: {bundle}', file=sys.stderr)
+                for warning in jobs.read_metadata(job.output_dir).get('warnings', []):
+                    print(f"WARNING [{warning['group_label']}: {warning['input_name']}]: {warning['message']}", file=sys.stderr)
             except (QuickalignError, OSError, ValueError):
                 print(f'Job diagnostics: {job.output_dir}', file=sys.stderr)
         return 1

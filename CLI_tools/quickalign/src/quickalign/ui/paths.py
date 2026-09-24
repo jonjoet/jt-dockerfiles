@@ -73,5 +73,5 @@ def label(selection):
 
 def redact(message):
     text = str(message)
-    text = re.sub(r'[A-Za-z]:[\\/][^\s\n]+', '[server path]', text)
-    return re.sub(r'(?<![\w/])/(?!/)[^\s\n,;\)]+', '[server path]', text)
+    text = re.sub(r'[A-Za-z]:[\\/][^\n,;]+', '[server path]', text)
+    return re.sub(r'(?<![\w/])/(?!/)[^\n,;]+', '[server path]', text)

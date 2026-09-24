@@ -157,8 +157,8 @@ def submit(config, submission):
                             reference_display=display_name(submission.reference),
                             annotation_display=display_name(submission.annotation)))
     except BaseException as error:
-        if output is not None:
-            jobs.fail_job(job or output, error)
+        if job is not None:
+            jobs.fail_job(job, error)
         raise
     finally:
         try:

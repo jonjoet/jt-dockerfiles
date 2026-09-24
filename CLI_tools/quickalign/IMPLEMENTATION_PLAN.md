@@ -2,8 +2,11 @@
 
 ## Status
 
-This document is the implementation plan only. No quickalign application,
-container, tests, or example data have been created yet.
+The version 1 implementation, container, tests, and synthetic fixture recipe
+are now present. This document retains the governing scope and acceptance
+contract. Run `tests/verify.sh` for Docker-only automated verification; native
+Windows launcher execution and visual JBrowse Desktop checks remain manual
+release gates as described below.
 
 ## Goal
 

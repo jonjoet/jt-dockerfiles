@@ -12,7 +12,7 @@ printf 'commit:  %s   dirty: %s\nstarted: %s\npurpose: capstone\n' "$sha" "$dirt
 mkdir -p "$run/tmp"
 export BUILDX_CONFIG="$run/buildx"
 docker build -t quickalign:0.1.0 "$project" > "$run/image-build.log" 2>&1
-docker build -f tests/resolver/Dockerfile -t quickalign:resolver-test . > "$run/resolver-build.log" 2>&1
+docker build -f tests/resolver/Dockerfile --build-arg QUICKALIGN_TEST_IMAGE=quickalign:0.1.0 -t quickalign:resolver-test . > "$run/resolver-build.log" 2>&1
 docker image inspect quickalign:0.1.0 quickalign:resolver-test > "$run/images.json"
 docker run --rm --network none --read-only --user "$(id -u):$(id -g)" \
   --memory 4g --cpus 4 --pids-limit 512 --cap-drop ALL --security-opt no-new-privileges \

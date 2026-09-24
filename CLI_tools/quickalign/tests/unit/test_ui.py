@@ -41,6 +41,8 @@ def test_browser_containment_and_types(config, tmp_path):
     with pytest.raises(ValidationError):
         resolve(config, Selection(-1, 'reads.fastq'))
     assert '/work/private' not in redact('Failure /work/private/log.txt')
+    assert 'patient' not in redact('Failure /inputs/private patient/reads.fastq')
+    assert 'patient' not in redact('Failure C:\\inputs\\private patient\\reads.fastq')
 
 
 def test_config_mounts_and_upload_limits(config):
@@ -59,6 +61,20 @@ def test_gate_rejects_before_reservation(config):
         with pytest.raises(service.BusyError):
             service.submit(config, request(config))
     assert list(config.output_root.iterdir()) == []
+
+
+def test_reservation_collision_never_modifies_prior_job(config, monkeypatch):
+    from quickalign.models import RunSpec
+    service.initialize(config)
+    prior = jobs.reserve_job('collision', config.output_root / 'collision', config.work_root,
+                             RunSpec(Path('ref'), Path('gff'), (), 'original'))
+    original = (prior.output_dir / 'job.json').read_bytes()
+    monkeypatch.setattr(jobs, 'new_job_id', lambda: 'collision')
+    with pytest.raises(FileExistsError):
+        service.submit(config, request(config))
+    assert (prior.output_dir / 'job.json').read_bytes() == original
+    assert prior.work.is_dir()
+    assert not service.GATE.lock.locked()
 
 
 def test_gate_shared_across_imports_and_active_discovery(config, monkeypatch):

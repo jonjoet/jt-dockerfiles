@@ -159,7 +159,9 @@ def render_result(config, item, prefix):
         else:
             bundle = jobs.completed_bundle(output)
             size = sum(p.stat().st_size for p in bundle.rglob('*') if p.is_file())
-            if size > config.max_download_bytes:
+            if item.get('export_status') == 'completed':
+                st.info('The completed ZIP exceeds the browser download limit or is unavailable. Retrieve the bundle from the mounted output folder.')
+            elif size > config.max_download_bytes:
                 st.info('This bundle exceeds the browser download limit. Retrieve its directory from the mounted output folder.')
             elif st.button('Prepare ZIP download', key=f'{prefix}_export'):
                 # Serialize exports against submissions and other exports.
