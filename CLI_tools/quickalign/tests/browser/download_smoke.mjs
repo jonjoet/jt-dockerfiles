@@ -18,7 +18,7 @@ const errors = [];
 const mediaRequests = [];
 page.on('pageerror', error => errors.push(String(error)));
 page.on('request', request => {
-  if (request.url().includes('/media/')) mediaRequests.push(request.url());
+  if (new URL(request.url()).pathname.startsWith('/media/')) mediaRequests.push(request.url());
 });
 try {
   await page.goto(url);
@@ -29,7 +29,7 @@ try {
   await download.waitFor();
   assert.match(await result.innerText(), /incomplete/i);
   assert.match(await result.innerText(), /Bundle available/);
-  assert.equal(mediaRequests.length, 0, 'Page rendering must not request archive data');
+  assert.equal(mediaRequests.length, 0, `Page rendering requested archive data: ${mediaRequests}`);
   const event = page.waitForEvent('download', { timeout: 60000 });
   await download.click();
   const archive = await event;
@@ -46,6 +46,10 @@ try {
       'deferred download click succeeded'], errors,
   }, null, 2));
   console.log('installed-browser-download-ok');
+} catch (error) {
+  await page.screenshot({ path: join(output, 'failure.png'), fullPage: true });
+  writeFileSync(join(output, 'failure.txt'), `${error.stack}\n${mediaRequests.join('\n')}\n${await page.locator('body').innerText()}`);
+  throw error;
 } finally {
   await browser.close();
 }
