@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 import uuid
 import zipfile
@@ -85,8 +86,11 @@ def read_metadata(output_dir):
     if path.stat().st_size > MAX_METADATA_BYTES:
         raise ValidationError("Job metadata exceeds its size limit")
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_METADATA_BYTES + 1)
+        if len(payload) > MAX_METADATA_BYTES:
+            raise ValidationError("Job metadata exceeds its size limit")
+        value = json.loads(payload)
     except (ValueError, RecursionError) as exc:
         raise ValidationError("Malformed job metadata") from exc
     if not isinstance(value, dict) or value.get("schema_version") != 1:
@@ -222,7 +226,7 @@ def run_job(job, prepared_inputs=None):
     from .commands import CommandRunner, probe_versions
     from .alignment import build_alignments
     from .annotation import build_annotation
-    from .bundle import build_bundle, validate_bundle
+    from .bundle import build_bundle
     runner = None
     result = None
     try:
@@ -242,7 +246,6 @@ def run_job(job, prepared_inputs=None):
         update_metadata(job, stage="bundle", warnings=[asdict(w) for w in warnings],
                         tracks=[_track_metadata(t) for t in tracks], commands=runner.records)
         build_bundle(job, prepared, tracks, runner, warnings, versions)
-        validate_bundle(job.partial)
         # rename, fsync, then completed metadata: only this order publishes.
         if job.bundle.exists():
             raise ValidationError("Final bundle already exists")
@@ -286,20 +289,27 @@ def _track_metadata(track):
             "zero_mapped": track.mapped == 0}
 
 
-def completed_bundle(output_dir):
+def completed_bundle_info(output_dir, metadata=None):
+    """Check publication and availability once, returning its bounded manifest."""
     from .bundle import validate_bundle
-    root = Path(output_dir).resolve(strict=True)
-    data = read_metadata(root)
+    root = Path(output_dir)
+    if root.is_symlink():
+        raise ValidationError("Unsafe job directory")
+    data = read_metadata(root) if metadata is None else metadata
+    root = root.resolve(strict=True)
     name = data.get("bundle")
     if data["status"] != "completed" or not isinstance(name, str):
-        raise ValidationError("No validated completed bundle")
+        raise ValidationError("No completed bundle")
     if Path(name).name != name or not name.endswith(".jbrowse"):
         raise ValidationError("Unsafe bundle path")
     path = root / name
     if path.is_symlink() or not path.is_dir() or path.resolve().parent != root:
         raise ValidationError("Unsafe bundle directory")
-    validate_bundle(path)
-    return path
+    return path, validate_bundle(path)
+
+
+def completed_bundle(output_dir):
+    return completed_bundle_info(output_dir)[0]
 
 
 def export_zip(job):
@@ -350,10 +360,14 @@ def discover_jobs(output_root, active_job_id=None):
             item["bundle_available"] = False
             if data["status"] == "completed":
                 try:
-                    completed_bundle(directory)
+                    _, manifest = completed_bundle_info(directory, data)
                     item["bundle_available"] = True
-                except (OSError, ValueError, ValidationError):
-                    item["validation_error"] = "Bundle validation failed"
+                    item["bundle_size_bytes"] = sum(record["size"] for record in manifest["files"])
+                    archive = _archive_info(directory, data)
+                    if archive:
+                        item["archive_name"], item["archive_size_bytes"] = archive
+                except (OSError, ValueError, ValidationError) as error:
+                    item["validation_error"] = str(error)
             if data.get("export_status") == "running" and data["job_id"] != active_job_id:
                 item["export_display_status"] = "interrupted"
             else:
@@ -391,17 +405,61 @@ def reconcile_work(output_root, work_root, active_job_id=None):
     return removed
 
 
-def downloadable_archive(output_dir, max_bytes):
-    """Return only a bounded finished export of a validated completed bundle."""
+def _archive_info(output_dir, metadata):
+    """Inspect finished archive metadata without opening its payload."""
     root = Path(output_dir)
-    completed_bundle(root)
-    data = read_metadata(root)
-    name = data.get("archive")
-    if data.get("export_status") != "completed" or not isinstance(name, str):
+    name = metadata.get("archive")
+    if metadata.get("export_status") != "completed" or not isinstance(name, str):
         return None
-    if Path(name).name != name or not name.endswith(".jbrowse.zip"):
+    if name != f"{metadata.get('bundle')}.zip" or Path(name).name != name:
         return None
     path = root / name
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > max_bytes:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.resolve(strict=True).parent != root.resolve(strict=True):
+            return None
+    except OSError:
         return None
-    return path
+    return name, info.st_size
+
+
+def downloadable_archive(output_dir, max_bytes):
+    """Return a small finished export; never read archive payload here."""
+    root = Path(output_dir)
+    data = read_metadata(root)
+    completed_bundle_info(root, data)
+    archive = _archive_info(root, data)
+    if archive is None or archive[1] > max_bytes:
+        return None
+    return root / archive[0]
+
+
+def download_archive_bytes(output_dir, max_bytes):
+    """Click-only download: recheck the file and enforce the memory limit."""
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValidationError("Invalid browser download limit")
+    root = Path(output_dir)
+    path = downloadable_archive(root, max_bytes)
+    if path is None:
+        raise ValidationError("ZIP unavailable or exceeds the browser download limit; use the output mount")
+    # Pin the containing directory and reject final-component symlink swaps.
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        with os.fdopen(fd, "rb", buffering=0) as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValidationError("ZIP must be a regular file")
+            if before.st_size > max_bytes:
+                raise ValidationError("ZIP exceeds the browser download limit; use the output mount")
+            payload = handle.read(max_bytes + 1)
+            after = os.fstat(handle.fileno())
+            if len(payload) > max_bytes or after.st_size > max_bytes:
+                raise ValidationError("ZIP exceeds the browser download limit; use the output mount")
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns
+            ) or len(payload) != after.st_size:
+                raise ValidationError("ZIP changed during download; refresh the results page")
+            return payload
+    finally:
+        os.close(directory_fd)

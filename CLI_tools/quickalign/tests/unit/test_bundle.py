@@ -216,8 +216,10 @@ def test_validator_detects_tampering_absolute_uri_and_symlinks(tmp_path):
         validate_bundle(job.partial)
 
     job, _ = _build(tmp_path / "symlink")
-    (job.partial / "extra-link").symlink_to(job.partial / "config.json")
-    with pytest.raises(ValidationError, match="Symlinks are forbidden"):
+    target = job.partial / "annotation" / "features.gff3.gz"
+    target.unlink()
+    target.symlink_to(job.partial / "config.json")
+    with pytest.raises(ValidationError, match="Symlink is forbidden"):
         validate_bundle(job.partial)
 
 
@@ -247,7 +249,7 @@ def test_validator_rejects_nonobject_json_and_missing_adapter_contracts(tmp_path
         validate_bundle(job.partial)
 
 
-def test_validation_cache_uses_full_stat_signature_and_returns_a_copy(tmp_path, monkeypatch):
+def test_availability_returns_fresh_metadata_without_rehashing(tmp_path, monkeypatch):
     import quickalign.bundle as bundle
 
     job, _ = _build(tmp_path)
@@ -258,7 +260,7 @@ def test_validation_cache_uses_full_stat_signature_and_returns_a_copy(tmp_path, 
 
     config = job.partial / "config.json"
     config.write_bytes(config.read_bytes() + b" ")
-    with pytest.raises(AssertionError, match="rehash"):
+    with pytest.raises(ValidationError, match="Size mismatch"):
         validate_bundle(job.partial)
 
 

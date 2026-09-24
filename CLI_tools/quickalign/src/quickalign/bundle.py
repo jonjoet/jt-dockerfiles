@@ -7,8 +7,6 @@ import json
 import os
 import re
 import stat
-import threading
-from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -38,9 +36,6 @@ REQUIRED_FILES = (
     "annotation/features.gff3.gz",
     "annotation/features.gff3.gz.tbi",
 )
-_VALIDATION_CACHE: OrderedDict[Path, tuple[tuple[Any, ...], dict[str, Any]]] = OrderedDict()
-_VALIDATION_CACHE_LOCK = threading.Lock()
-_VALIDATION_CACHE_SIZE = 64
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -274,9 +269,12 @@ Input warnings
 def _iter_inventory_files(root: Path) -> Iterable[Path]:
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         relative = path.relative_to(root)
-        if path.is_symlink():
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
             raise ValidationError(f"Symlinks are forbidden in bundles: {relative.as_posix()}")
-        if path.is_file() and relative.as_posix() != "manifest.json" and not relative.name.endswith(".local.jbrowse"):
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+            raise ValidationError(f"Unsupported filesystem entry in bundle: {relative.as_posix()}")
+        if stat.S_ISREG(mode) and relative.as_posix() != "manifest.json" and not relative.name.endswith(".local.jbrowse"):
             yield path
 
 
@@ -478,31 +476,15 @@ def _read_json(path: Path, *, label: str, maximum: int) -> Any:
     try:
         if path.stat().st_size > maximum:
             raise ValidationError(f"{label} exceeds the {maximum}-byte limit")
-        return json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            payload = stream.read(maximum + 1)
+        if len(payload) > maximum:
+            raise ValidationError(f"{label} exceeds the {maximum}-byte limit")
+        return json.loads(payload.decode("utf-8"))
     except ValidationError:
         raise
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValidationError(f"{label} is not valid bounded UTF-8 JSON") from exc
-
-
-def _bundle_signature(root: Path) -> tuple[Any, ...]:
-    signature: list[Any] = []
-    try:
-        for entry in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-            info = entry.lstat()
-            relative = entry.relative_to(root).as_posix()
-            if stat.S_ISLNK(info.st_mode):
-                raise ValidationError(f"Symlinks are forbidden in bundles: {relative}")
-            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-                raise ValidationError(f"Unsupported filesystem entry in bundle: {relative}")
-            signature.append(
-                (relative, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            )
-    except ValidationError:
-        raise
-    except OSError as exc:
-        raise ValidationError(f"Could not inspect bundle contents: {exc}") from exc
-    return tuple(signature)
 
 
 def _validate_config_contract(config: dict[str, Any], manifest: dict[str, Any]) -> None:
@@ -626,7 +608,11 @@ def _validate_config_contract(config: dict[str, Any], manifest: dict[str, Any]) 
 
 
 def validate_bundle(path: Path) -> dict[str, Any]:
-    """Validate inventory integrity and all portable adapter paths."""
+    """Check availability using bounded metadata and tracked-file safety/sizes.
+
+    Hashes are creation provenance. Availability intentionally does not read
+    payloads or detect same-size corruption, and tolerates untracked additions.
+    """
     root = Path(path)
     if not root.is_dir() or root.is_symlink():
         raise ValidationError("Bundle path must be a non-symlink directory")
@@ -634,19 +620,6 @@ def validate_bundle(path: Path) -> dict[str, Any]:
         root = root.resolve(strict=True)
     except OSError as exc:
         raise ValidationError(f"Could not resolve bundle path: {exc}") from exc
-    signature_before = _bundle_signature(root)
-    with _VALIDATION_CACHE_LOCK:
-        cached = _VALIDATION_CACHE.get(root)
-        if cached is not None and cached[0] == signature_before:
-            _VALIDATION_CACHE.move_to_end(root)
-            return deepcopy(cached[1])
-
-    for relative in REQUIRED_FILES:
-        _contained_regular_file(root, PurePosixPath(relative), context="required assets")
-    trix_files = [item for item in (root / "trix").rglob("*") if item.is_file()] if (root / "trix").is_dir() else []
-    if not trix_files:
-        raise ValidationError("JBrowse text index is missing")
-
     manifest_path = _contained_regular_file(root, PurePosixPath("manifest.json"), context="manifest")
     manifest = _read_json(manifest_path, label="manifest.json", maximum=MAX_MANIFEST_BYTES)
     if not isinstance(manifest, dict):
@@ -666,45 +639,31 @@ def validate_bundle(path: Path) -> dict[str, Any]:
             raise ValidationError(f"Invalid manifest inventory entry: {name}")
         seen.add(name)
         candidate = _contained_regular_file(root, relative, context="manifest inventory")
-        if type(record.get("size")) is not int or record["size"] != candidate.stat().st_size:
+        if type(record.get("size")) is not int or record["size"] < 0 or record["size"] != candidate.stat().st_size:
             raise ValidationError(f"Size mismatch for {name}")
-        digest = _sha256(candidate)
-        if not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", ""))) or digest != record["sha256"]:
-            raise ValidationError(f"SHA-256 mismatch for {name}")
+        if not isinstance(record.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
+            raise ValidationError(f"Invalid SHA-256 provenance for {name}")
 
-    actual = {item.relative_to(root).as_posix() for item in _iter_inventory_files(root)}
-    if seen != actual:
-        missing = sorted(actual - seen)
-        extra = sorted(seen - actual)
-        raise ValidationError(f"Manifest inventory mismatch (missing={missing}, extra={extra})")
-
+    required = set(REQUIRED_FILES) | {"trix/assembly.ix", "trix/assembly.ixx", "trix/assembly_meta.json"}
+    if not required.issubset(seen):
+        raise ValidationError(f"Required assets missing from manifest: {sorted(required - seen)}")
     config = _read_json(root / "config.json", label="config.json", maximum=MAX_CONFIG_BYTES)
     if not isinstance(config, dict):
         raise ValidationError("config.json must contain an object")
     _validate_config_contract(config, manifest)
-    expected_bams = {f"alignments/{group['track_id']}.bam" for group in manifest["read_groups"]}
-    actual_bams = {
-        item.relative_to(root).as_posix() for item in (root / "alignments").glob("*.bam") if item.is_file()
-    }
-    if actual_bams != expected_bams:
-        raise ValidationError("Manifest/config BAM tracks do not match bundle BAM files")
+    for group in manifest["read_groups"]:
+        if not set(group["files"]).issubset(seen):
+            raise ValidationError(f"Required track assets missing from manifest: {group['track_id']}")
     uris = list(_config_uris(config))
     if not uris:
         raise ValidationError("config.json has no portable asset URIs")
     for uri in uris:
         relative = _safe_relative(uri, context="config.json")
-        _contained_regular_file(root, relative, context="config.json")
+        if relative.as_posix() not in seen:
+            raise ValidationError(f"Config asset missing from manifest: {relative.as_posix()}")
     template = _read_json(
         root / "local.template.jbrowse", label="local.template.jbrowse", maximum=MAX_CONFIG_BYTES
     )
     if template != _localize_config(config):
         raise ValidationError("Local template does not match localized portable config")
-    signature_after = _bundle_signature(root)
-    if signature_after != signature_before:
-        raise ValidationError("Bundle changed while it was being validated")
-    with _VALIDATION_CACHE_LOCK:
-        _VALIDATION_CACHE[root] = (signature_after, deepcopy(manifest))
-        _VALIDATION_CACHE.move_to_end(root)
-        while len(_VALIDATION_CACHE) > _VALIDATION_CACHE_SIZE:
-            _VALIDATION_CACHE.popitem(last=False)
-    return deepcopy(manifest)
+    return manifest

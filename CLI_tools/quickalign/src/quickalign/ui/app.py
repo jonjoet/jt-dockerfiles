@@ -1,5 +1,6 @@
 """Thin Streamlit view; every navigation widget lives outside a form."""
 from pathlib import Path
+from functools import partial
 import streamlit as st
 
 from quickalign import jobs
@@ -145,20 +146,24 @@ def render_result(config, item, prefix):
         st.error(redact(item['failure'].get('message', 'Job failed; inspect mounted logs.')))
     if not item.get('bundle_available'):
         if item.get('validation_error'):
-            st.error(item['validation_error'])
+            st.error(redact(item['validation_error']))
         return
     output = config.output_root / job_id
     st.success(f"Bundle available in the output mount: {job_id}/{item['bundle']}")
     if item.get('export_display_status') in {'failed', 'interrupted'}:
         st.warning(f"ZIP export {item['export_display_status']}. The completed bundle remains available.")
     try:
-        archive = jobs.downloadable_archive(output, config.max_download_bytes)
+        size = item['bundle_size_bytes']
+        st.caption(f"Bundle assets: {size / 1024**2:.1f} MiB (recorded at creation)")
+        archive = item.get('archive_name')
         if archive:
-            with archive.open('rb') as handle:
-                st.download_button('Download ZIP', handle, file_name=archive.name, key=f'{prefix}_download')
+            st.caption(f"ZIP in the output mount: {job_id}/{archive}")
+        if archive and item['archive_size_bytes'] <= config.max_download_bytes:
+            st.download_button(
+                'Download ZIP', partial(jobs.download_archive_bytes, output, config.max_download_bytes),
+                file_name=archive, mime='application/zip', key=f'{prefix}_download', on_click='ignore',
+            )
         else:
-            bundle = jobs.completed_bundle(output)
-            size = sum(p.stat().st_size for p in bundle.rglob('*') if p.is_file())
             if item.get('export_status') == 'completed':
                 st.info('The completed ZIP exceeds the browser download limit or is unavailable. Retrieve the bundle from the mounted output folder.')
             elif size > config.max_download_bytes:
