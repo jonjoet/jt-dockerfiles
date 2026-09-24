@@ -59,7 +59,7 @@ def test_all_read_forms_complete_and_relocate(tmp_path):
     target = tmp_path / 'moved space " dollar$ apostrophe\' amp& brackets[] (paren); café' / bundle.name
     target.parent.mkdir()
     bundle.rename(target)
-    subprocess.run(['sh',str(target/'resolve-local.sh')], cwd=tmp_path, check=True)
+    subprocess.run(['bash',str(target/'resolve-local.sh')], cwd=tmp_path, check=True)
     local = json.loads(next(target.glob('*.local.jbrowse')).read_text())
     assert local['tracks'] and local['assemblies']
     validate_bundle(target)
