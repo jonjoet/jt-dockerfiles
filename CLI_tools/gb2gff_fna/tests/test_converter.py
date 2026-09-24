@@ -188,13 +188,156 @@ class ConverterTests(unittest.TestCase):
         rows = feature_rows(record_with([remote]))
         self.assertEqual([row[2] for row in rows], ["region"])
 
-    def test_duplicate_normalized_record_ids_are_rejected(self):
+    def test_record_ids_are_normalized_for_fasta_and_gff3(self):
+        records = [
+            record_with([], record_id="[LEX]dna_NSV_CphI_LP"),
+        ]
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            gb2gff_fna.normalize_ids(records)
+
+        self.assertEqual(records[0].id, "LEX-dna_NSV_CphI_LP")
+        self.assertEqual(records[0].name, "LEX-dna_NSV_CphI_LP")
+        self.assertIn(
+            "normalized record 1 identifier '[LEX]dna_NSV_CphI_LP' "
+            "to 'LEX-dna_NSV_CphI_LP'",
+            stderr.getvalue(),
+        )
+        gff_seqids = {
+            line.split("\t", 1)[0]
+            for line in gb2gff_fna.convert(records, "GenBank")
+            if line and not line.startswith("#")
+        }
+        fasta = io.StringIO()
+        SeqIO.write(records, fasta, "fasta")
+        self.assertEqual(gff_seqids, {"LEX-dna_NSV_CphI_LP"})
+        self.assertEqual(
+            fasta.getvalue().splitlines()[0].split(None, 1)[0],
+            ">LEX-dna_NSV_CphI_LP",
+        )
+
+    def test_duplicate_normalized_record_ids_are_rejected_with_repair_hint(self):
         records = [
             record_with([], record_id="duplicate"),
             record_with([], record_id="duplicate"),
         ]
-        with self.assertRaisesRegex(ValueError, "duplicate record identifier"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "duplicate record identifiers.*--auto-rename-collisions",
+        ):
             gb2gff_fna.normalize_ids(records)
+
+    def test_auto_rename_resolves_normalized_collisions(self):
+        records = [
+            record_with([], record_id="[duplicate]"),
+            record_with([], record_id="duplicate"),
+        ]
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            gb2gff_fna.normalize_ids(
+                records,
+                auto_rename_collisions=True,
+            )
+        self.assertEqual(
+            [record.id for record in records],
+            ["duplicate-1", "duplicate-2"],
+        )
+        self.assertIn(
+            "renamed colliding record 1 identifier '[duplicate]' "
+            "(normalized as 'duplicate') to 'duplicate-1'",
+            stderr.getvalue(),
+        )
+
+    def test_punctuation_only_record_id_becomes_unknown(self):
+        record = record_with([], record_id="•.•")
+        gb2gff_fna.normalize_ids([record])
+        self.assertEqual(record.id, "unknown")
+
+    def test_auto_rename_skips_preexisting_suffixes(self):
+        records = [
+            record_with([], record_id="duplicate"),
+            record_with([], record_id="duplicate"),
+            record_with([], record_id="duplicate-1"),
+        ]
+        gb2gff_fna.normalize_ids(records, auto_rename_collisions=True)
+        self.assertEqual(
+            [record.id for record in records],
+            ["duplicate-2", "duplicate-3", "duplicate-1"],
+        )
+
+    def test_auto_rename_avoids_candidates_across_collision_groups(self):
+        records = [
+            record_with([], record_id="a-1"),
+            record_with([], record_id="a-1"),
+            record_with([], record_id="a"),
+            record_with([], record_id="a"),
+        ]
+        gb2gff_fna.normalize_ids(records, auto_rename_collisions=True)
+        self.assertEqual(
+            [record.id for record in records],
+            ["a-1-1", "a-1-2", "a-2", "a-3"],
+        )
+
+    def test_cli_collision_failure_and_auto_rename(self):
+        records = [
+            record_with([], record_id="duplicate"),
+            record_with([], record_id="duplicate"),
+        ]
+        for record in records:
+            record.annotations["molecule_type"] = "DNA"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "duplicates.gb"
+            SeqIO.write(records, input_path, "genbank")
+
+            rejected_out = root / "rejected"
+            rejected_stderr = io.StringIO()
+            with redirect_stderr(rejected_stderr):
+                rejected_status = gb2gff_fna.main(
+                    [
+                        str(input_path),
+                        "--outdir",
+                        str(rejected_out),
+                    ]
+                )
+            self.assertEqual(rejected_status, 1)
+            self.assertFalse(rejected_out.exists())
+            self.assertIn(
+                "--auto-rename-collisions",
+                rejected_stderr.getvalue(),
+            )
+
+            renamed_out = root / "renamed"
+            renamed_stderr = io.StringIO()
+            with redirect_stderr(renamed_stderr):
+                renamed_status = gb2gff_fna.main(
+                    [
+                        str(input_path),
+                        "--outdir",
+                        str(renamed_out),
+                        "--auto-rename-collisions",
+                        "--validate",
+                    ]
+                )
+            self.assertEqual(renamed_status, 0, renamed_stderr.getvalue())
+            with (renamed_out / "duplicates.fna").open() as fasta_handle:
+                fasta_ids = [
+                    record.id
+                    for record in SeqIO.parse(fasta_handle, "fasta")
+                ]
+            self.assertEqual(fasta_ids, ["duplicate-1", "duplicate-2"])
+            feature_seqids = {
+                line.split("\t", 1)[0]
+                for line in (renamed_out / "duplicates.gff3")
+                .read_text()
+                .splitlines()
+                if line and not line.startswith("#")
+            }
+            self.assertEqual(
+                feature_seqids,
+                {"duplicate-1", "duplicate-2"},
+            )
 
     def test_explicit_gene_mrna_cds_hierarchy_is_preserved(self):
         gene = SeqFeature(

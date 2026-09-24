@@ -31,8 +31,9 @@ For an input `myplasmid.gb` and output directory `out/`:
   rows with one shared `ID` and ordered `part=X/Y` attributes. An exact,
   contiguous circular boundary wrap uses one virtual-coordinate row.
 
-The FASTA header and GFF3 `seqid` always match (the LOCUS name is used when the
-record has no accession, which is the usual case for Benchling exports).
+Record identifiers are normalized to conservative filename-like characters so
+the FASTA header and GFF3 `seqid` match exactly. The LOCUS name is used when the
+record has no accession, which is the usual case for Benchling exports.
 
 ## Web interface
 
@@ -45,10 +46,11 @@ docker compose up -d --build
 
 Open <http://localhost:8501>, upload a `.gb`, `.gbk`, or `.genbank` file, and
 download the generated GFF3 and FASTA individually or together as a ZIP. The
-form exposes the output basename, GFF3 source column, and non-destructive
-validation switch. Validation is enabled by default. If validation reports a
-problem, the interface keeps both generated files available for inspection and
-shows the diagnostics above their download buttons.
+form exposes the output basename, GFF3 source column, optional automatic
+renaming of colliding record identifiers, and non-destructive validation switch.
+Validation is enabled by default. If validation reports a problem, the interface
+keeps both generated files available for inspection and shows the diagnostics
+above their download buttons.
 
 The server restarts automatically unless explicitly stopped. Common management
 commands are:
@@ -115,7 +117,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
 ### Options
 
 ```
-gb2gff_fna.py INPUT.gb -o OUTDIR [--prefix NAME] [--source STR] [--validate]
+gb2gff_fna.py INPUT.gb -o OUTDIR [--prefix NAME] [--source STR]
+    [--auto-rename-collisions] [--validate]
 ```
 
 | Option | Description |
@@ -124,6 +127,7 @@ gb2gff_fna.py INPUT.gb -o OUTDIR [--prefix NAME] [--source STR] [--validate]
 | `-o, --outdir` | Output directory (created if absent). Default: current dir. |
 | `--prefix` | Output basename. Default: input filename without extension. |
 | `--source` | Value for the GFF3 source column. Default: `GenBank`. |
+| `--auto-rename-collisions` | Rename duplicate normalized record IDs with `-1`, `-2`, etc. |
 | `--validate` | Validate the generated GFF3 without changing it. |
 
 ## Validation
@@ -153,11 +157,20 @@ place, reports every detected error to standard error, and exits non-zero.
   `Note`, `/db_xref` becomes `Dbxref`, and valueless flags become `true`.
 
 Remote-reference locations are skipped with a warning instead of being silently
-relocated onto the current record. Duplicate normalized record IDs are rejected.
-Real `accession.version` identifiers are preserved. Records without an accession
-fall back to their LOCUS name so FASTA headers and GFF3 seqids stay aligned.
-Unknown strand is emitted as `.`, while an explicitly relevant but unknown
-strand is emitted as `?`.
+relocated onto the current record. Record IDs are restricted to letters, digits,
+periods, underscores, and hyphens; other character runs are replaced with `-`.
+Real `accession.version` identifiers are therefore preserved. Records without an
+accession fall back to their LOCUS name.
+
+Benchling can truncate distinct LOCUS names to the same value. Duplicate IDs are
+rejected before any output is written because they make both FASTA records and
+GFF3 coordinate systems ambiguous. The error recommends
+`--auto-rename-collisions`, which renames every member of each collision group
+in input order with `-1`, `-2`, and later available suffixes, skipping names
+already used by another record. The web interface exposes the same repair
+behavior as a checkbox. Warnings identify the input record number and each
+renaming. Unknown strand is emitted as `.`, while an explicitly relevant but
+unknown strand is emitted as `?`.
 
 For circular records, a full-length `region` feature receives
 `Is_circular=true`; one is synthesized when absent. Exact contiguous wraps can

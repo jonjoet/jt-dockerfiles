@@ -8,6 +8,7 @@ non-destructive: it reports problems but never rewrites the generated GFF3.
 
 import argparse
 import os
+import re
 import sys
 from collections import defaultdict
 from urllib.parse import quote, unquote
@@ -69,6 +70,7 @@ QUALIFIER_KEY_MAP = {"note": "Note", "db_xref": "Dbxref"}
 # Biopython record.id placeholders that should fall back to the LOCUS name.
 # Benchling exports typically have no ACCESSION, so record.id is "." or unset.
 PLACEHOLDER_IDS = {"", ".", "unknown", "<unknown id>", "<unknown name>"}
+_UNSAFE_RECORD_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
 # Characters that must be percent-encoded in GFF3 attribute values. Spaces are
 # encoded for broad parser compatibility even though GFF3 permits literal ones.
@@ -195,23 +197,87 @@ def make_unique(base, used):
     return candidate
 
 
-def normalize_ids(records):
-    """Replace placeholder record ids with the LOCUS name, in place.
+def canonical_record_id(value):
+    """Return a conservative identifier suitable for FASTA and GFF3."""
+    normalized = _UNSAFE_RECORD_ID.sub("-", str(value)).strip("-")
+    if not any(
+        character.isascii() and character.isalnum()
+        for character in normalized
+    ):
+        return "unknown"
+    return normalized
 
-    Keeps the FASTA header and GFF3 seqid consistent and meaningful.
+
+def normalize_ids(records, auto_rename_collisions=False):
+    """Normalize record IDs consistently across FASTA and GFF3 outputs.
+
+    Duplicate normalized IDs are rejected unless ``auto_rename_collisions``
+    assigns deterministic numeric suffixes.
     """
-    seen = set()
-    for record in records:
-        if record.id in PLACEHOLDER_IDS:
+    normalized_ids = []
+    original_ids = []
+    groups = defaultdict(list)
+
+    for index, record in enumerate(records):
+        original = record.id
+        if original in PLACEHOLDER_IDS:
             if record.name and record.name not in PLACEHOLDER_IDS:
-                record.id = record.name
+                original = record.name
             else:
-                record.id = "unknown"
-        if record.id in seen:
-            raise ValueError(
-                f"duplicate record identifier after normalization: {record.id}"
+                original = "unknown"
+        original_ids.append(original)
+        normalized = canonical_record_id(original)
+        normalized_ids.append(normalized)
+        groups[normalized].append(index)
+        if normalized != original:
+            sys.stderr.write(
+                f"warning: normalized record {index + 1} identifier {original!r} "
+                f"to {normalized!r} for FASTA/GFF3 compatibility\n"
             )
-        seen.add(record.id)
+
+    collisions = {
+        record_id: indexes
+        for record_id, indexes in groups.items()
+        if len(indexes) > 1
+    }
+    final_ids = list(normalized_ids)
+
+    if collisions and auto_rename_collisions:
+        occupied = set(normalized_ids)
+        assigned = {
+            record_id
+            for record_id, indexes in groups.items()
+            if len(indexes) == 1
+        }
+        for record_id, indexes in collisions.items():
+            suffix = 1
+            for index in indexes:
+                while True:
+                    candidate = f"{record_id}-{suffix}"
+                    suffix += 1
+                    if candidate not in occupied and candidate not in assigned:
+                        break
+                final_ids[index] = candidate
+                assigned.add(candidate)
+                sys.stderr.write(
+                    f"warning: renamed colliding record {index + 1} identifier "
+                    f"{original_ids[index]!r} (normalized as {record_id!r}) "
+                    f"to {candidate!r}\n"
+                )
+    elif collisions:
+        details = ", ".join(
+            f"{record_id!r} ({len(indexes)} records)"
+            for record_id, indexes in collisions.items()
+        )
+        raise ValueError(
+            "duplicate record identifiers after normalization: "
+            f"{details}; enable automatic collision renaming to assign unique "
+            "numeric suffixes (CLI: --auto-rename-collisions)"
+        )
+
+    for record, record_id in zip(records, final_ids):
+        record.id = record_id
+        record.name = record_id
 
 
 def _qualifier_set(feature, *keys):
@@ -933,6 +999,13 @@ def main(argv=None):
         help="value for the GFF3 source column (default: GenBank)",
     )
     parser.add_argument(
+        "--auto-rename-collisions",
+        action="store_true",
+        help=(
+            "rename duplicate normalized record IDs with -1, -2, ... suffixes"
+        ),
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="validate the generated GFF3 without modifying it",
@@ -954,7 +1027,10 @@ def main(argv=None):
         return 1
 
     try:
-        normalize_ids(records)
+        normalize_ids(
+            records,
+            auto_rename_collisions=args.auto_rename_collisions,
+        )
     except ValueError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1

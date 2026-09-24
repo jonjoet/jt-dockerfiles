@@ -9,6 +9,7 @@ INPUT_FILE="./example/plasmid_benchling.gb"  # host path to input GenBank file
 OUTPUT_DIR="./gb2gff_fna_output"             # host dir for .fna + .gff3
 PREFIX=""                                    # output basename (empty = input name)
 VALIDATE=0                                   # 1 = validate GFF3, 0 = skip
+AUTO_RENAME_COLLISIONS=0                     # 1 = suffix duplicate record IDs
 SOURCE="GenBank"                             # value for the GFF3 source column
 
 IMAGE="gb2gff_fna:latest"
@@ -42,6 +43,7 @@ fi
 ARGS=(-o /data/output --source "$SOURCE")
 [[ -n "$PREFIX" ]] && ARGS+=(--prefix "$PREFIX")
 [[ "$VALIDATE" == "1" ]] && ARGS+=(--validate)
+[[ "$AUTO_RENAME_COLLISIONS" == "1" ]] && ARGS+=(--auto-rename-collisions)
 
 docker run --rm \
     --user "$(id -u):$(id -g)" \

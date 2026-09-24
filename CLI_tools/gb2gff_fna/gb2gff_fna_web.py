@@ -80,6 +80,7 @@ def convert_upload(
     requested_prefix="",
     source="GenBank",
     validate=True,
+    auto_rename_collisions=False,
 ):
     """Convert an uploaded GenBank document and return downloadable bytes."""
     if not uploaded_bytes:
@@ -117,9 +118,19 @@ def convert_upload(
                         "No GenBank records were found in the uploaded file."
                     )
                 try:
-                    gb2gff_fna.normalize_ids(records)
+                    gb2gff_fna.normalize_ids(
+                        records,
+                        auto_rename_collisions=auto_rename_collisions,
+                    )
                 except ValueError as exc:
-                    raise ConversionError(str(exc)) from exc
+                    identifier_diagnostics = diagnostics.getvalue().strip()
+                    message = str(exc)
+                    if identifier_diagnostics:
+                        message += (
+                            "\n\nIdentifier changes before collision detection:\n"
+                            f"{identifier_diagnostics}"
+                        )
+                    raise ConversionError(message) from exc
 
                 gff_text = "\n".join(gb2gff_fna.convert(records, source)) + "\n"
                 fasta_handle = io.StringIO()
@@ -214,6 +225,14 @@ def main():
             value=True,
             help="Reports structural problems without rewriting the annotation.",
         )
+        auto_rename_collisions = st.checkbox(
+            "Automatically rename colliding record identifiers",
+            value=False,
+            help=(
+                "Adds -1, -2, and later suffixes when Benchling truncation or "
+                "identifier normalization produces duplicate record names."
+            ),
+        )
         submitted = st.form_submit_button(
             "Convert",
             type="primary",
@@ -233,6 +252,7 @@ def main():
                         requested_prefix=prefix,
                         source=source,
                         validate=validate,
+                        auto_rename_collisions=auto_rename_collisions,
                     )
             except ConversionError as exc:
                 st.error(str(exc))

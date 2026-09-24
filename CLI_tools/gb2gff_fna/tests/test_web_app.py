@@ -122,11 +122,37 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(validated.fna, unvalidated.fna)
         self.assertGreater(len(validated.archive), 0)
 
+    def test_duplicate_record_ids_require_explicit_auto_rename(self):
+        duplicate = self.example_bytes + self.example_bytes
+        with self.assertRaisesRegex(
+            gb2gff_fna_web.ConversionError,
+            "enable automatic collision renaming",
+        ):
+            gb2gff_fna_web.convert_upload(
+                duplicate,
+                "duplicates.gb",
+                validate=False,
+            )
+
+        repaired = gb2gff_fna_web.convert_upload(
+            duplicate,
+            "duplicates.gb",
+            validate=True,
+            auto_rename_collisions=True,
+        )
+        self.assertTrue(repaired.validated)
+        self.assertIn(b">test_plasmid-1", repaired.fna)
+        self.assertIn(b">test_plasmid-2", repaired.fna)
+
     def test_streamlit_page_renders_without_exceptions(self):
         app_path = Path(__file__).resolve().parents[1] / "gb2gff_fna_web.py"
         app = AppTest.from_file(str(app_path)).run(timeout=10)
         self.assertEqual(list(app.exception), [])
         self.assertEqual(app.title[0].value, "GenBank → GFF3 + FASTA")
+        self.assertIn(
+            "Automatically rename colliding record identifiers",
+            [checkbox.label for checkbox in app.checkbox],
+        )
 
 
 if __name__ == "__main__":
