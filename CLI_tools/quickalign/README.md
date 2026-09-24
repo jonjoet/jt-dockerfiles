@@ -212,6 +212,10 @@ launcher without mounting source over the package, exercising a real build,
 visible truncation warnings, and ZIP export. PowerShell is absent from the
 product image.
 
+The [browser acceptance recipes](tests/browser/README.md) check actual annotation
+and BAM rendering in pinned JBrowse 4.3.0 and a clicked download from the installed
+Streamlit service.
+
 `tests/fixtures/make_fixture.py DESTINATION` creates deterministic mixed-
 technology inputs for container acceptance runs. Native execution of
 `resolve-local.cmd` and visual inspection of the bounded default locus,
