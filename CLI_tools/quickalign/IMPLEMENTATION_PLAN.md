@@ -41,6 +41,14 @@ and work mounts rather than keeping all data in memory.
 
 ### MMSeek `origin/ui/streamlit`
 
+Local reference checkout: `~/qbk-code/mmseek`. The UI is on
+`origin/ui/streamlit`, inspected at commit
+`14cd7af758cc2a6dc9b001bdbe70d802ec188256`, rather than the checked-out `main`.
+Use `src/mmseek/ui/app.py` (`_render_server_browser` and the separate Run
+button) plus `src/mmseek/ui/paths.py` as concrete implementation references.
+The browser stores root-relative selections in session state and uses ordinary
+buttons with `st.rerun()` for navigation and selection changes, outside forms.
+
 Reuse its mounted-file and service-safety patterns:
 
 - expose only configured roots beneath `/inputs`;
@@ -245,8 +253,9 @@ output basename.
 
 Reservation ordering is deliberate: create the output directory, write the
 initial running metadata, then create the scoped work directory. Any failure
-after output creation, including work-directory creation, validation, or
-upload staging, updates the durable job to `status=failed`. All `job.json`
+after output creation while the job is still running, including work-directory
+creation, validation, or upload staging, updates it to `status=failed`.
+Failure handlers must preserve existing terminal statuses. All `job.json`
 replacements use a temporary file in the same directory, flush and `fsync`,
 then `os.replace`, so job discovery never observes a partially written JSON
 document.
@@ -262,6 +271,8 @@ Additional CLI behavior:
   rename it to `SAMPLE.jbrowse` only after all required bundle files validate;
 - return non-zero on validation, alignment, indexing, bundle, or finalization
   failure;
+- return zero for a completed bundle with recoverable input warnings, printing
+  a prominent warning summary identifying the affected read groups;
 - retain durable logs and failure metadata;
 - retain failed run directories with `status=failed`, but never offer a
   `.partial` directory as a completed bundle;
@@ -270,10 +281,18 @@ Additional CLI behavior:
 - make `--zip` opt-in because duplicating large BAMs in an archive can consume
   substantial disk space.
 
-An archive written to disk is created as `.zip.partial` and renamed only after
-the bundle is complete. ZIP metadata must preserve the executable bit for
-`resolve-local.sh`; the README will also show `sh resolve-local.sh` as a
-portable fallback.
+ZIP creation is a separate export step after the bundle has been published.
+An archive written to disk is created as `.zip.partial`, validated, and renamed
+only when the export succeeds. Track export status separately in `job.json`
+(`not_requested`, `running`, `completed`, or `failed`); an export failure never
+changes the completed bundle's job status or removes the bundle. Explicit CLI
+`--zip` export failure returns non-zero and reports both the export error and
+the usable bundle location. Streamlit reports the export failure while keeping
+the completed bundle accessible, and never offers a `.zip.partial` download.
+After interruption, an export left `running` is shown as interrupted without
+invalidating the completed bundle. ZIP metadata must preserve the executable
+bit for `resolve-local.sh`; the README will also show `sh resolve-local.sh` as
+a portable fallback.
 
 `--name` defaults to a sanitized reference FASTA stem. For CLI runs,
 `OUTPUT_DIR` is the durable run directory and `SAMPLE.jbrowse` is the finished
@@ -291,9 +310,20 @@ and JBrowse labels.
 - Copy the reference into the bundle without changing sequence IDs or bases.
 - Build a fresh `.fai` with pinned samtools.
 - Record contig names and lengths for annotation validation.
+- Before alignment or BWA-MEM2 indexing, reject any contig longer than
+  536,870,912 bases (2^29), naming the contig and the supported limit. Version 1
+  uses BAI and TBI indexes; this is a per-contig limit, not a total reference
+  size or BAM file-size limit. CSI support is deferred.
 
 Compressed reference input is out of scope for the first version. Requiring a
 plain FASTA avoids ambiguous random-access and bundle-copy behavior.
+
+Human GRCh38 fits this index contract: its longest chromosome is 248,956,422
+bases. See the [GRCh38 chromosome lengths](https://www.ncbi.nlm.nih.gov/grc/human/data)
+and the [BAI](https://www.htslib.org/doc/samtools-index.html) and
+[TBI](https://www.htslib.org/doc/tabix.html) index limits. The README should
+explain this distinction so users do not mistake the limit for whole-genome
+size.
 
 ### GFF/GFF3
 
@@ -317,14 +347,45 @@ plain FASTA avoids ambiguous random-access and bundle-copy behavior.
   verify equal record counts plus compatible normalized mate identifiers.
 - For interleaved Illumina input, verify an even record count and alternating
   compatible mate identifiers.
-- Do not perform a full extra validation pass over unpaired Illumina or
-  Nanopore FASTQ unless needed to diagnose an explicit parser/alignment error;
-  alignment failures must remain visible and non-zero.
+- Detect malformed or truncated unpaired Illumina/Nanopore FASTQ and gzip
+  read errors during the normal input/alignment pass, without a full extra
+  validation pass. Do not assume a zero aligner exit code proves complete
+  input consumption. Use pinned parser diagnostics only where negative tests
+  prove reliable detection and error classification; otherwise use a validating
+  streaming reader that feeds complete records to the aligner. Only premature
+  EOF/truncation is recoverable, including a partial final FASTQ record.
+  Preserve complete decoded records before truncation and record a warning.
+- Gzip CRC mismatches, invalid gzip trailers, DEFLATE data errors, other I/O
+  errors, and malformed FASTQ not attributable to premature EOF are fatal.
+  A late checksum failure may mean earlier decoded bases were wrong, even if
+  their FASTQ syntax and resulting BAM are valid. Ensure gzip readers reach
+  and check available trailers; do not mask corruption by stopping validation
+  early. A missing trailer due to truncation is the recoverable exception.
+- Recoverable truncation may produce a completed bundle with warnings
+  when the aligner and downstream steps succeed and every BAM/index passes
+  validation. Non-zero aligner/sort exits, invalid BAMs, and indexing failures
+  remain fatal; do not downgrade arbitrary tool failures to warnings.
 - Reject Nanopore paired/interleaved declarations at model validation time.
 
 Pair-name normalization must be narrowly specified and tested for common
 `/1`/`/2` and Illumina whitespace mate fields. It must not guess through
 ambiguous names.
+
+Pairing validation remains strict: malformed paired inputs, unequal counts,
+or incompatible mate identifiers fail rather than guessing how to repair pairs.
+Recoverable input warnings identify the read group, input display name, and
+problem in `job.json`, the bundle manifest and README files, the CLI summary,
+and Streamlit current/previous results. Persist warnings as a structured array;
+keep `status=completed` for a verified published bundle and display it as
+**Completed with warnings** when that array is non-empty. Input warnings must
+include: **Some input reads could not be processed; these alignments may be
+incomplete.** Do not claim all remaining reads were recovered or report an
+exact lost-read count unless measured. For truncated gzip, also state:
+**Gzip integrity could not be verified because the final checksum is missing
+or incomplete; recovered reads have not passed that integrity check.** This
+warning must travel with the bundle; syntactically complete records are not
+proof that their bases are intact. Exported and browser-visible warnings use
+display names, not raw absolute server paths.
 
 ## Shared Python architecture
 
@@ -361,6 +422,12 @@ Build both indexes once per job:
 
 - `samtools faidx` for JBrowse and BAM coordinate validation;
 - `bwa-mem2 index` when at least one Illumina group is present.
+
+Use an explicit BWA-MEM2 `-p` prefix under the reserved job's scoped work
+directory (`/work/<job-id>/bwa/reference` in the UI), and pass that same prefix
+to `bwa-mem2 mem`. Index files must not land beside read-only input files or
+inside the portable bundle. Keep job-local indexing; version 1 adds no shared
+index cache or indexing redesign.
 
 minimap2 can align directly to the FASTA for the initial version. If real-data
 testing shows repeated Nanopore groups spend material time rebuilding the
@@ -483,6 +550,8 @@ release later gains direct relative-URI support.
 - read-group labels, technology, layout, track IDs, and bundle-relative files;
 - external tool versions;
 - effective alignment presets and thread allocation;
+- structured input warnings identifying affected read groups and any known
+  limits on input completeness, also rendered prominently in README files;
 - bundle file sizes and SHA-256 hashes; and
 - JBrowse compatibility information.
 
@@ -511,6 +580,15 @@ The CLI and Streamlit expose a bundle only when the job status is `completed`
 and `SAMPLE.jbrowse/manifest.json` passes validation. A crash after the rename
 but before the terminal metadata update therefore remains interrupted and does
 not present an unconfirmed bundle as successful.
+
+Validated completion metadata is the authoritative publication condition;
+directory existence alone is insufficient. A handled failure after rename
+retains failed metadata where possible, and an abrupt interruption may leave
+running metadata. Both may leave a final-named directory containing
+`config.json`, but neither is offered as a completed result. Preserve that
+directory for inspection. Completion can include the input warnings described
+above. Subsequent ZIP export has its own status and failure handling and must
+not reverse bundle completion.
 
 ## Streamlit interface
 
@@ -565,11 +643,17 @@ limits and explain that mounted server files are preferred for large FASTQs.
 - Define one module-level, process-global execution gate in an imported module
   such as `ui/service.py`, not in the rerun entry script. It contains a
   non-blocking `threading.Lock` and an `active_job_id`.
-- Perform obvious form-only validation, such as missing R2 or an empty sample
+- Perform obvious input-only validation, such as missing R2 or an empty sample
   name, before acquiring the gate or reserving a durable job.
-- The Streamlit submit control is a form submit. A submission must acquire the
-  gate before selecting a job ID or reserving output/work paths; otherwise it
-  receives a busy message and creates no job.
+- Follow MMSeek's responsive interaction pattern: file browsing, read-row
+  add/remove controls, technology/layout selectors, and the interleaved
+  checkbox live outside `st.form` and update immediately through session state
+  and reruns. Give each row and file selector stable, distinct widget keys.
+- Use a separate ordinary `st.button` labeled **Build bundle**. Only an explicit
+  click constructs a submission from current widget state and invokes the
+  service; navigation and other reruns never submit jobs. A submission must
+  acquire the gate before selecting a job ID or reserving output/work paths;
+  otherwise it receives a busy message and creates no job.
 - The shared core never imports Streamlit or calls `st.*`; it reports progress
   only through durable `job.json` updates and logs.
 - Unique job IDs:
@@ -585,10 +669,15 @@ limits and explain that mounted server files are preferred for large FASTQs.
 - Run the core synchronously while the submitting Streamlit session displays a
   spinner. Version 1 does not add a background worker.
 - Execute reservation, staging, and the core inside `try`/`except`/`finally`.
-  Expected failures update `job.json` to `failed`; an unexpected
-  `BaseException` makes a best-effort failed update when a job was reserved and
-  is then re-raised. The `finally` block always clears `active_job_id` and
-  releases the lock.
+  Both expected-failure and unexpected-`BaseException` handlers may change
+  `status=running` to `failed` only when the durable metadata still reports
+  that status. Preserve terminal statuses, including when a Streamlit stop or
+  rerun exception arrives after the core has saved `status=completed`.
+  Re-raise unexpected `BaseException` instances after the best-effort update
+  or terminal-status check. The `finally` block always clears `active_job_id`
+  and releases the lock, even when the terminal status must remain unchanged.
+- Handle ZIP export separately from core failure handling so export exceptions
+  never replace a completed bundle status with `failed`.
 - Preserve completed and failed output directories.
 - Clean only the current job's work directory unless keep-work is selected.
 - Previous-results discovery receives the gate's current `active_job_id`. It
@@ -674,6 +763,31 @@ Follow the stronger MMSeek service contract:
 Document that the service has no authentication and should be exposed remotely
 only through a trusted private network or an authenticated TLS reverse proxy.
 
+### Memory configuration
+
+The intended deployment host has more than 400 GB RAM. Default the configurable
+container memory ceiling to `256g`, with `QUICKALIGN_MEMORY` as the operator
+parameter. Compose uses `mem_limit: "${QUICKALIGN_MEMORY:-256g}"`; the optional
+CLI helper passes the same value to `docker run --memory` and into the container
+for metadata. Direct Docker examples show `--memory 256g` and the matching
+environment setting. Record the configured ceiling and effective container
+limit when available. The environment variable alone does not enforce a limit
+for a directly launched Python process.
+
+This is an upper limit, not a reservation or a target allocation. Keep the
+explicit per-worker `samtools sort -m` allocation distinct from the whole
+container limit and leave room for the aligner, UI, and other runtime memory.
+Operators on smaller machines and synthetic CI runs can lower the container
+limit without changing the default for the deployment host. The UI must not
+claim to change the container ceiling at job submission time.
+
+Document that BWA-MEM2 reference indexing can need substantially more memory
+than using the completed index. Human-scale benchmarking and shared index
+caching are not version 1 requirements for the current deployment. An index
+process killed for exceeding memory is a fatal indexing failure, with durable
+diagnostics where possible; if the whole container dies, existing interruption
+handling applies. Do not report a memory-related failure as successful output.
+
 ### Host-side helper
 
 Add a small `run_quickalign.sh` only if it remains a transparent convenience
@@ -729,9 +843,13 @@ Cover:
 - deterministic safe track IDs and collision handling;
 - exact BWA-MEM2, minimap2, samtools, bgzip, tabix, and JBrowse argv arrays;
 - paired and interleaved mate-name validation;
-- FASTA duplicate IDs and empty records;
+- FASTA duplicate IDs, empty records, and per-contig length boundaries at
+  2^29 and 2^29 + 1 (use synthetic length metadata for boundary unit tests);
+- input-warning capture, completed-with-warnings presentation, and independent
+  ZIP export status/failure handling;
 - GFF field, contig, coordinate, embedded-FASTA, and sorting behavior;
 - thread-budget calculations;
+- memory configuration defaults/overrides and job-local BWA index prefixes;
 - bundle-relative config generation;
 - shared `reserve_job`/`run_job` behavior for both CLI and Streamlit;
 - durable status transitions, atomic `job.json` replacement,
@@ -760,6 +878,9 @@ The end-to-end test will:
 - run as a non-root UID;
 - mount inputs read-only;
 - use separate output and work mounts;
+- verify BWA index files stay under scoped work and are absent from the bundle;
+- verify the configured Docker memory override is applied, using a smaller
+  limit suitable for the synthetic fixture rather than allocating 256 GB;
 - disable network after image construction where practical;
 - exercise all four read-group forms in one job;
 - verify input checksums remain unchanged;
@@ -770,12 +891,28 @@ The end-to-end test will:
 - validate every URI in `config.json` resolves inside the bundle;
 - confirm the JBrowse text index exists;
 - check manifest sizes/hashes;
-- confirm `SAMPLE.jbrowse/config.json` exists only for a `status=completed`
-  run, while a partial bundle may contain its unoffered working config;
+- confirm a bundle is offered only with validated `status=completed` metadata
+  and a valid manifest, regardless of whether a final-named directory exists;
 - confirm a failed run remains durable with `status=failed`, logs, and no
-  completed `SAMPLE.jbrowse` directory;
+  published bundle;
+- inject failure and interruption after bundle rename but before completion
+  metadata is written; retain the final-named directory for inspection while
+  keeping it unavailable as a completed result in CLI and UI discovery;
 - inject a bundle-stage failure and confirm the `.partial` directory is never
   offered as a result;
+- exercise premature EOF in plain/gzipped FASTQ for each pinned unpaired
+  aligner path, preserving complete decoded reads with completeness warnings
+  and the additional unverified-integrity warning for truncated gzip;
+- test CRC mismatch, a mid-file bit flip in compressed data, and DEFLATE data
+  errors separately from truncation; all detected integrity failures must
+  prevent publication even if earlier reads produced a valid BAM;
+- reject malformed non-truncation FASTQ, preserve strict paired-input
+  rejection, and keep tool/BAM/index failures fatal;
+- verify warnings survive bundle relocation in the manifest and README files
+  and appear in the CLI summary and Streamlit current/previous results;
+- inject ZIP export failure after bundle completion; verify the completed
+  bundle remains accessible, export failure is reported separately, explicit
+  CLI `--zip` returns non-zero, and no partial archive is offered;
 - verify normal work cleanup and keep-work behavior; and
 - verify a failed aligner/indexing step remains non-zero with durable logs and
   failure metadata.
@@ -790,8 +927,16 @@ The end-to-end test will:
 - UI component tests for adding/removing read rows, changing technology,
   paired R2 behavior, interleaved checkbox behavior, validation messages, and
   submission mapping to shared core models.
+- Exercise MMSeek-style directory navigation and file selection before any
+  Build click; verify immediate updates, independent row state, and no job
+  reservation or execution from navigation, selector changes, or reruns alone.
 - Service-layer rerun test proving the execution gate rejects a duplicate
   submission while the synchronous core call is active.
+- Service-layer test where the core saves `status=completed` and a subsequent
+  Streamlit-style stop/rerun `BaseException` is raised: completion metadata and
+  bundle availability survive, the exception propagates, `active_job_id` is
+  cleared, and the execution lock is released. Also verify an already failed
+  job retains its original failure metadata.
 - Two-session discovery test proving an active job remains `running` and its
   work directory is not reconciled while a second session lists prior jobs.
 - Two-session test proving both sessions reference the same gate object from
@@ -863,6 +1008,8 @@ The end-to-end test will:
 ## Acceptance criteria
 
 1. One plain reference FASTA and one matching GFF/GFF3 are required.
+   Contigs longer than 2^29 bases fail preflight before alignment or BWA-MEM2
+   indexing; version 1 retains BAI/TBI indexes.
 2. A job accepts any non-empty mixture of Illumina single, Illumina
    separate-pair, Illumina interleaved-pair, and Nanopore single read groups.
 3. Invalid technology/layout combinations fail before an aligner starts.
@@ -883,9 +1030,15 @@ The end-to-end test will:
     expose raw absolute server paths.
 11. The Compose service runs healthy as non-root with read-only inputs/root
     filesystem, separate writable output/work mounts, bounded resources, and a
-    localhost-only default port.
-12. Completed and failed jobs retain useful durable metadata and logs; no
-    failure is reported as success.
+    localhost-only default port. Its `QUICKALIGN_MEMORY` ceiling defaults to
+    `256g` and supports explicit deployment/test overrides.
+12. Completed and failed jobs retain useful durable metadata and logs.
+    Unpaired-input truncation preserves verified BAMs with prominent, portable
+    completeness warnings and an unverified-integrity warning for truncated
+    gzip. CRC/DEFLATE corruption and other fatal core failures are never
+    published as completed bundles. Publication requires validated completion
+    metadata and manifest, including after interruption. ZIP export failures
+    are reported separately without invalidating a completed bundle.
 13. The implementation passes Docker-only unit, integration, Streamlit, and
     Desktop-resolver verification from a clean checkout.
 
@@ -903,6 +1056,7 @@ The end-to-end test will:
 
 - multiple reference assemblies or annotations;
 - CRAM output;
+- CSI indexes and references with contigs longer than 2^29 bases;
 - merging BAMs across read groups;
 - read trimming, adapter removal, QC reports, duplicate marking, filtering,
   coverage tracks, and variant calling;
