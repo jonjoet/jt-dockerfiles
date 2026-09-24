@@ -10,6 +10,16 @@ from quickalign.models import PreparedInputs, ReadGroup, ReservedJob, RunSpec, T
 
 
 class SubprocessRunner:
+    records = [
+        {
+            "step": "thread-allocation",
+            "requested": 4,
+            "aligner_threads": 2,
+            "sort_worker_threads": 1,
+            "sort_main_threads": 1,
+        }
+    ]
+
     def run(self, step, argv, stdout_path=None):
         return subprocess.run(argv, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -81,7 +91,7 @@ def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: 
             pytest.skip("PowerShell test image is not in use")
         argv = [pwsh, "-NoProfile", "-File", str(destination / launcher)]
     else:
-        argv = [str(destination / launcher)]
+        argv = ["/bin/sh", str(destination / launcher)]
     subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True, text=True)
     _assert_local_locations(destination / "portable.local.jbrowse", destination)
     assert validate_bundle(destination)["sample_name"] == "fixture"

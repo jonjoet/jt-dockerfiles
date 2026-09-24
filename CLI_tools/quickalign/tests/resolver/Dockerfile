@@ -5,7 +5,10 @@ FROM ${QUICKALIGN_TEST_IMAGE}
 
 COPY --from=powershell /opt/microsoft/powershell/7 /opt/microsoft/powershell/7
 ENV PATH="/opt/microsoft/powershell/7:${PATH}" \
-    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+    HOME=/tmp/home \
+    XDG_CACHE_HOME=/tmp/cache \
+    XDG_CONFIG_HOME=/tmp/config
 
 ENTRYPOINT []
 CMD ["pytest"]

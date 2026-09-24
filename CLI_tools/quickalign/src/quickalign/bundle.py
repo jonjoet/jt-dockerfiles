@@ -7,6 +7,9 @@ import json
 import os
 import re
 import stat
+import threading
+from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -17,6 +20,8 @@ from .errors import ValidationError
 from .models import InputWarning, PreparedInputs, ReservedJob, TrackResult
 
 SCHEMA_VERSION = 1
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_CONFIG_BYTES = 16 * 1024 * 1024
 ANNOTATION_TRACK_ID = "annotation"
 TEXT_ATTRIBUTES = "Name,ID,gene,gene_name,locus_tag,Alias"
 REQUIRED_FILES = (
@@ -32,6 +37,9 @@ REQUIRED_FILES = (
     "annotation/features.gff3.gz",
     "annotation/features.gff3.gz.tbi",
 )
+_VALIDATION_CACHE: OrderedDict[Path, tuple[tuple[Any, ...], dict[str, Any]]] = OrderedDict()
+_VALIDATION_CACHE_LOCK = threading.Lock()
+_VALIDATION_CACHE_SIZE = 64
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -320,10 +328,31 @@ def _manifest(
     job: ReservedJob,
     prepared: PreparedInputs,
     tracks: tuple[TrackResult, ...],
+    runner: Any,
     warnings: tuple[InputWarning, ...],
     tool_versions: dict[str, str],
 ) -> dict[str, Any]:
     root = job.partial
+    allocation = next(
+        (record for record in reversed(runner.records) if record.get("step") == "thread-allocation"),
+        None,
+    )
+    if allocation is None:
+        from .commands import allocate_threads
+
+        aligner_threads, sort_worker_threads = allocate_threads(job.spec.threads)
+    else:
+        aligner_threads = allocation["aligner_threads"]
+        sort_worker_threads = allocation["sort_worker_threads"]
+    try:
+        from .jobs import resource_metadata
+
+        container_memory = resource_metadata()
+    except ImportError:  # Allows the standalone bundle contract tests to run before jobs is integrated.
+        container_memory = {
+            "configured_memory": os.environ.get("QUICKALIGN_MEMORY", "256g"),
+            "effective_memory_bytes": None,
+        }
     return {
         "schema": "quickalign-bundle",
         "schema_version": SCHEMA_VERSION,
@@ -361,7 +390,14 @@ def _manifest(
         ],
         "warnings": [asdict(item) for item in warnings],
         "tool_versions": dict(sorted(tool_versions.items())),
-        "run": {"requested_threads": job.spec.threads, "sort_memory": job.spec.sort_memory},
+        "run": {
+            "requested_threads": job.spec.threads,
+            "aligner_threads": aligner_threads,
+            "sort_worker_threads": sort_worker_threads,
+            "sort_main_threads": 1,
+            "sort_memory_per_worker": job.spec.sort_memory,
+            "container_memory": container_memory,
+        },
         "jbrowse": {
             "cli_version": tool_versions.get("jbrowse", "unknown"),
             "compatibility": "JBrowse 2 Desktop",
@@ -412,7 +448,10 @@ def build_bundle(
     (root / "resolve-local.ps1").write_text(_PS1_RESOLVER, encoding="utf-8", newline="\n")
     (root / "resolve-local.cmd").write_text(_CMD_RESOLVER, encoding="utf-8", newline="\r\n")
     _write_readmes(root, job.spec.name, warnings_tuple)
-    _write_json(root / "manifest.json", _manifest(job, prepared, tracks_tuple, warnings_tuple, tool_versions))
+    _write_json(
+        root / "manifest.json",
+        _manifest(job, prepared, tracks_tuple, runner, warnings_tuple, tool_versions),
+    )
     validate_bundle(root)
 
 
@@ -461,14 +500,147 @@ def _config_uris(value: Any) -> Iterable[str]:
             yield from _config_uris(nested)
 
 
+def _read_json(path: Path, *, label: str, maximum: int) -> Any:
+    try:
+        if path.stat().st_size > maximum:
+            raise ValidationError(f"{label} exceeds the {maximum}-byte limit")
+        return json.loads(path.read_text(encoding="utf-8"))
+    except ValidationError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValidationError(f"{label} is not valid bounded UTF-8 JSON") from exc
+
+
+def _bundle_signature(root: Path) -> tuple[Any, ...]:
+    signature: list[Any] = []
+    try:
+        for entry in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+            info = entry.lstat()
+            relative = entry.relative_to(root).as_posix()
+            if stat.S_ISLNK(info.st_mode):
+                raise ValidationError(f"Symlinks are forbidden in bundles: {relative}")
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise ValidationError(f"Unsupported filesystem entry in bundle: {relative}")
+            signature.append(
+                (relative, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            )
+    except ValidationError:
+        raise
+    except OSError as exc:
+        raise ValidationError(f"Could not inspect bundle contents: {exc}") from exc
+    return tuple(signature)
+
+
+def _validate_config_contract(config: dict[str, Any], manifest: dict[str, Any]) -> None:
+    assemblies = config.get("assemblies")
+    tracks = config.get("tracks")
+    search = config.get("aggregateTextSearchAdapters")
+    groups = manifest.get("read_groups")
+    if not isinstance(assemblies, list) or len(assemblies) != 1 or not isinstance(assemblies[0], dict):
+        raise ValidationError("config.json must contain one assembly")
+    if not isinstance(tracks, list) or not all(isinstance(item, dict) for item in tracks):
+        raise ValidationError("config.json tracks must be a list of objects")
+    if not isinstance(search, list) or len(search) != 1 or not isinstance(search[0], dict) or search[0].get(
+        "type"
+    ) != "TrixTextSearchAdapter":
+        raise ValidationError("config.json is missing its Trix text-search adapter")
+    if not isinstance(groups, list) or not all(isinstance(item, dict) for item in groups):
+        raise ValidationError("Manifest read_groups must be a list of objects")
+    reference = manifest.get("reference")
+    annotation_manifest = manifest.get("annotation")
+    if not isinstance(reference, dict) or reference.get("files") != [
+        "reference/assembly.fasta",
+        "reference/assembly.fasta.fai",
+    ]:
+        raise ValidationError("Manifest reference files do not match the bundle contract")
+    if not isinstance(annotation_manifest, dict) or annotation_manifest.get("files") != [
+        "annotation/features.gff3.gz",
+        "annotation/features.gff3.gz.tbi",
+    ]:
+        raise ValidationError("Manifest annotation files do not match the bundle contract")
+
+    def uri(value: Any) -> Any:
+        return value.get("uri") if isinstance(value, dict) else None
+
+    trix = search[0]
+    if (
+        uri(trix.get("ixFilePath")) != "trix/assembly.ix"
+        or uri(trix.get("ixxFilePath")) != "trix/assembly.ixx"
+        or uri(trix.get("metaFilePath")) != "trix/assembly_meta.json"
+    ):
+        raise ValidationError("config.json Trix paths do not match the bundle contract")
+
+    assembly = assemblies[0]
+    sequence = assembly.get("sequence")
+    adapter = sequence.get("adapter") if isinstance(sequence, dict) else None
+    if not isinstance(adapter, dict) or adapter.get("type") != "IndexedFastaAdapter":
+        raise ValidationError("config.json is missing the indexed FASTA adapter")
+    if uri(adapter.get("fastaLocation")) != "reference/assembly.fasta" or uri(
+        adapter.get("faiLocation")
+    ) != "reference/assembly.fasta.fai":
+        raise ValidationError("config.json reference adapter paths do not match the bundle contract")
+
+    by_id = {item.get("trackId"): item for item in tracks if isinstance(item.get("trackId"), str)}
+    if len(by_id) != len(tracks):
+        raise ValidationError("config.json track IDs must be present and unique")
+    annotation = by_id.get(ANNOTATION_TRACK_ID)
+    annotation_adapter = annotation.get("adapter") if isinstance(annotation, dict) else None
+    if not isinstance(annotation_adapter, dict) or annotation_adapter.get("type") != "Gff3TabixAdapter":
+        raise ValidationError("config.json is missing the tabix annotation track")
+    if uri(annotation_adapter.get("gffGzLocation")) != "annotation/features.gff3.gz":
+        raise ValidationError("config.json annotation path does not match the bundle contract")
+    annotation_index = annotation_adapter.get("index")
+    if not isinstance(annotation_index, dict) or uri(annotation_index.get("location")) != (
+        "annotation/features.gff3.gz.tbi"
+    ):
+        raise ValidationError("config.json annotation index path does not match the bundle contract")
+
+    seen_track_ids: set[str] = set()
+    for group in groups:
+        track_id = group.get("track_id")
+        if not isinstance(track_id, str) or not track_id or track_id in seen_track_ids:
+            raise ValidationError("Manifest read group has an invalid track_id")
+        seen_track_ids.add(track_id)
+        expected_files = [
+            f"alignments/{track_id}.bam",
+            f"alignments/{track_id}.bam.bai",
+            f"alignments/{track_id}.flagstat.txt",
+        ]
+        if group.get("files") != expected_files:
+            raise ValidationError(f"Manifest files do not match track {track_id}")
+        track = by_id.get(track_id)
+        track_adapter = track.get("adapter") if isinstance(track, dict) else None
+        if not isinstance(track_adapter, dict) or track_adapter.get("type") != "BamAdapter":
+            raise ValidationError(f"config.json is missing BAM track {track_id}")
+        if uri(track_adapter.get("bamLocation")) != expected_files[0]:
+            raise ValidationError(f"config.json BAM path does not match track {track_id}")
+        index = track_adapter.get("index")
+        if not isinstance(index, dict) or uri(index.get("location")) != expected_files[1]:
+            raise ValidationError(f"config.json BAI path does not match track {track_id}")
+    bam_track_ids = {
+        track_id
+        for track_id, track in by_id.items()
+        if isinstance(track.get("adapter"), dict) and track["adapter"].get("type") == "BamAdapter"
+    }
+    if bam_track_ids != seen_track_ids:
+        raise ValidationError("config.json alignment tracks do not match manifest read groups")
+
+
 def validate_bundle(path: Path) -> dict[str, Any]:
     """Validate inventory integrity and all portable adapter paths."""
     root = Path(path)
     if not root.is_dir() or root.is_symlink():
         raise ValidationError("Bundle path must be a non-symlink directory")
-    for entry in root.rglob("*"):
-        if entry.is_symlink():
-            raise ValidationError(f"Symlinks are forbidden in bundles: {entry.relative_to(root)}")
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationError(f"Could not resolve bundle path: {exc}") from exc
+    signature_before = _bundle_signature(root)
+    with _VALIDATION_CACHE_LOCK:
+        cached = _VALIDATION_CACHE.get(root)
+        if cached is not None and cached[0] == signature_before:
+            _VALIDATION_CACHE.move_to_end(root)
+            return deepcopy(cached[1])
 
     for relative in REQUIRED_FILES:
         _contained_regular_file(root, PurePosixPath(relative), context="required assets")
@@ -477,10 +649,9 @@ def validate_bundle(path: Path) -> dict[str, Any]:
         raise ValidationError("JBrowse text index is missing")
 
     manifest_path = _contained_regular_file(root, PurePosixPath("manifest.json"), context="manifest")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValidationError("manifest.json is not valid UTF-8 JSON") from exc
+    manifest = _read_json(manifest_path, label="manifest.json", maximum=MAX_MANIFEST_BYTES)
+    if not isinstance(manifest, dict):
+        raise ValidationError("manifest.json must contain an object")
     if manifest.get("schema") != "quickalign-bundle" or manifest.get("schema_version") != SCHEMA_VERSION:
         raise ValidationError("Unsupported quickalign bundle manifest")
     records = manifest.get("files")
@@ -508,17 +679,33 @@ def validate_bundle(path: Path) -> dict[str, Any]:
         extra = sorted(seen - actual)
         raise ValidationError(f"Manifest inventory mismatch (missing={missing}, extra={extra})")
 
-    try:
-        config = json.loads((root / "config.json").read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValidationError("config.json is not valid UTF-8 JSON") from exc
+    config = _read_json(root / "config.json", label="config.json", maximum=MAX_CONFIG_BYTES)
+    if not isinstance(config, dict):
+        raise ValidationError("config.json must contain an object")
+    _validate_config_contract(config, manifest)
+    expected_bams = {f"alignments/{group['track_id']}.bam" for group in manifest["read_groups"]}
+    actual_bams = {
+        item.relative_to(root).as_posix() for item in (root / "alignments").glob("*.bam") if item.is_file()
+    }
+    if actual_bams != expected_bams:
+        raise ValidationError("Manifest/config BAM tracks do not match bundle BAM files")
     uris = list(_config_uris(config))
     if not uris:
         raise ValidationError("config.json has no portable asset URIs")
     for uri in uris:
         relative = _safe_relative(uri, context="config.json")
         _contained_regular_file(root, relative, context="config.json")
-    template = json.loads((root / "local.template.jbrowse").read_text(encoding="utf-8"))
+    template = _read_json(
+        root / "local.template.jbrowse", label="local.template.jbrowse", maximum=MAX_CONFIG_BYTES
+    )
     if template != config:
         raise ValidationError("Local template does not match portable config")
-    return manifest
+    signature_after = _bundle_signature(root)
+    if signature_after != signature_before:
+        raise ValidationError("Bundle changed while it was being validated")
+    with _VALIDATION_CACHE_LOCK:
+        _VALIDATION_CACHE[root] = (signature_after, deepcopy(manifest))
+        _VALIDATION_CACHE.move_to_end(root)
+        while len(_VALIDATION_CACHE) > _VALIDATION_CACHE_SIZE:
+            _VALIDATION_CACHE.popitem(last=False)
+    return deepcopy(manifest)

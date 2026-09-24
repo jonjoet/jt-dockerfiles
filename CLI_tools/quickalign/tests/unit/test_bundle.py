@@ -12,6 +12,15 @@ from quickalign.models import InputWarning, PreparedInputs, ReadGroup, ReservedJ
 class FakeRunner:
     def __init__(self):
         self.calls = []
+        self.records = [
+            {
+                "step": "thread-allocation",
+                "requested": 4,
+                "aligner_threads": 2,
+                "sort_worker_threads": 1,
+                "sort_main_threads": 1,
+            }
+        ]
 
     def run(self, step, argv, stdout_path=None):
         self.calls.append((step, argv, stdout_path))
@@ -72,6 +81,25 @@ def _build(tmp_path: Path):
     return job, runner
 
 
+def _replace_config(job, config):
+    import hashlib
+
+    payload = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode()
+    (job.partial / "config.json").write_bytes(payload)
+    (job.partial / "local.template.jbrowse").write_bytes(payload)
+    manifest_path = job.partial / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    replacements = {
+        "config.json": payload,
+        "local.template.jbrowse": payload,
+    }
+    for record in manifest["files"]:
+        replacement = replacements.get(record["path"])
+        if replacement is not None:
+            record.update(size=len(replacement), sha256=hashlib.sha256(replacement).hexdigest())
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def test_builds_deterministic_relative_bundle_and_manifest(tmp_path):
     job, runner = _build(tmp_path)
     manifest = validate_bundle(job.partial)
@@ -100,6 +128,14 @@ def test_builds_deterministic_relative_bundle_and_manifest(tmp_path):
     assert config["defaultSession"]["view"]["displayedRegions"][0]["end"] == 4
     assert manifest["warnings"][0]["code"] == "truncated"
     assert manifest["read_groups"][0]["counts"] == {"mapped": 1, "total": 1}
+    assert manifest["run"] == {
+        "requested_threads": 4,
+        "aligner_threads": 2,
+        "sort_worker_threads": 1,
+        "sort_main_threads": 1,
+        "sort_memory_per_worker": "256M",
+        "container_memory": {"configured_memory": "256g", "effective_memory_bytes": None},
+    }
     inventory = {record["path"] for record in manifest["files"]}
     assert "manifest.json" not in inventory
     assert "local.template.jbrowse" in inventory
@@ -115,7 +151,7 @@ def test_shell_resolver_survives_relocation_and_generated_file_is_uninventoried(
     job.partial.rename(relocated)
 
     completed = subprocess.run(
-        [str(relocated / "resolve-local.sh")],
+        ["/bin/sh", str(relocated / "resolve-local.sh")],
         cwd=tmp_path,
         check=True,
         stdout=subprocess.PIPE,
@@ -165,10 +201,44 @@ def test_validator_detects_tampering_absolute_uri_and_symlinks(tmp_path):
             payload = config_path.read_bytes()
             record.update(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ValidationError, match="Non-relative URI"):
+    with pytest.raises(ValidationError, match="annotation path|Non-relative URI"):
         validate_bundle(job.partial)
 
     job, _ = _build(tmp_path / "symlink")
     (job.partial / "extra-link").symlink_to(job.partial / "config.json")
     with pytest.raises(ValidationError, match="Symlinks are forbidden"):
+        validate_bundle(job.partial)
+
+
+def test_validator_rejects_nonobject_json_and_missing_adapter_contracts(tmp_path):
+    job, _ = _build(tmp_path / "manifest-shape")
+    (job.partial / "manifest.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="must contain an object"):
+        validate_bundle(job.partial)
+
+    job, _ = _build(tmp_path / "config-shape")
+    _replace_config(job, [])
+    with pytest.raises(ValidationError, match="config.json must contain an object"):
+        validate_bundle(job.partial)
+
+    job, _ = _build(tmp_path / "missing-bam-track")
+    config = json.loads((job.partial / "config.json").read_text())
+    config["tracks"] = [item for item in config["tracks"] if item["trackId"] == "annotation"]
+    _replace_config(job, config)
+    with pytest.raises(ValidationError, match="missing BAM track"):
+        validate_bundle(job.partial)
+
+
+def test_validation_cache_uses_full_stat_signature_and_returns_a_copy(tmp_path, monkeypatch):
+    import quickalign.bundle as bundle
+
+    job, _ = _build(tmp_path)
+    first = validate_bundle(job.partial)
+    first["sample_name"] = "caller mutation"
+    monkeypatch.setattr(bundle, "_sha256", lambda path: (_ for _ in ()).throw(AssertionError("rehash")))
+    assert validate_bundle(job.partial)["sample_name"] == "sample"
+
+    config = job.partial / "config.json"
+    config.write_bytes(config.read_bytes() + b" ")
+    with pytest.raises(AssertionError, match="rehash"):
         validate_bundle(job.partial)

@@ -9,7 +9,8 @@ test image:
 
 ```sh
 docker build -f tests/resolver/Dockerfile -t quickalign:resolver-test .
-docker run --rm -u "$(id -u):$(id -g)" \
+docker run --rm --read-only -u "$(id -u):$(id -g)" \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 \
   -v "$PWD:/project" -w /project -e PYTHONPATH=/project/src \
   quickalign:resolver-test \
   pytest -q tests/integration/test_resolvers.py
