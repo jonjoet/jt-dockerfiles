@@ -228,6 +228,13 @@ def test_validator_rejects_nonobject_json_and_missing_adapter_contracts(tmp_path
     with pytest.raises(ValidationError, match="missing BAM track"):
         validate_bundle(job.partial)
 
+    job, _ = _build(tmp_path / "absolute-local-path")
+    config = json.loads((job.partial / "config.json").read_text())
+    config["metadata"] = {"locationType": "LocalPathLocation", "localPath": "/server/secret"}
+    _replace_config(job, config)
+    with pytest.raises(ValidationError, match="local filesystem locations"):
+        validate_bundle(job.partial)
+
 
 def test_validation_cache_uses_full_stat_signature_and_returns_a_copy(tmp_path, monkeypatch):
     import quickalign.bundle as bundle

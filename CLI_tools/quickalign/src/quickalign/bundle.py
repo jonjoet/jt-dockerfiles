@@ -491,6 +491,8 @@ def _contained_regular_file(root: Path, relative: PurePosixPath, *, context: str
 
 def _config_uris(value: Any) -> Iterable[str]:
     if isinstance(value, dict):
+        if "localPath" in value or value.get("locationType") == "LocalPathLocation":
+            raise ValidationError("Portable config must not contain local filesystem locations")
         if "uri" in value:
             yield value["uri"]
         for nested in value.values():
