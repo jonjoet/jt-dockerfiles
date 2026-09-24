@@ -36,15 +36,20 @@ def reserve(root, technology, content, suffix='.fastq', *, layout='single', read
 
 
 @pytest.mark.parametrize('technology', ['illumina', 'nanopore'])
-@pytest.mark.parametrize('mode', ['plain-partial', 'gzip-missing-trailer', 'gzip-short-quality'])
+@pytest.mark.parametrize('mode', ['plain-partial', 'gzip-missing-trailer', 'gzip-short-quality', 'plain-bare-at', 'gzip-bare-at'])
 def test_unpaired_truncation_is_portable_warning(tmp_path, technology, mode):
     def content(record):
         if mode == 'plain-partial':
             return record + b'@incomplete\nACGT\n+\nII'
         if mode == 'gzip-missing-trailer':
             return gzip.compress(record, mtime=0)[:-4]
+        if mode == 'plain-bare-at':
+            return record + b'@'
+        if mode == 'gzip-bare-at':
+            return gzip.compress(record + b'@', mtime=0)
         return gzip.compress(record + b'@incomplete\nACGT\n+\nII', mtime=0)
-    job, _ = reserve(tmp_path, technology, content, '.fastq' if mode == 'plain-partial' else '.fastq.gz')
+    suffix = '.fastq' if mode.startswith('plain-') else '.fastq.gz'
+    job, _ = reserve(tmp_path, technology, content, suffix)
     result = jobs.run_job(job)
     metadata = jobs.read_metadata(job.output_dir)
     assert metadata['status'] == 'completed'
@@ -61,7 +66,7 @@ def test_unpaired_truncation_is_portable_warning(tmp_path, technology, mode):
     relocated = tmp_path / 'relocated bundle ü & spaces'
     job.bundle.rename(relocated)
     manifest = json.loads((relocated / 'manifest.json').read_text())
-    assert manifest['warnings'][0]['input_name'] == ('reads.fastq' if mode == 'plain-partial' else 'reads.fastq.gz')
+    assert manifest['warnings'][0]['input_name'] == 'reads' + suffix
     for filename in ('README.txt', 'README.html'):
         assert TRUNCATION_TEXT in (relocated / filename).read_text()
         assert (GZIP_TRUNCATION_TEXT.strip() in (relocated / filename).read_text()) == has_gzip_warning
@@ -102,6 +107,28 @@ def test_gzip_integrity_failure_prevents_publication(tmp_path, technology, mode)
     assert not job.work.exists()
     with pytest.raises(ValidationError):
         jobs.completed_bundle(job.output_dir)
+
+
+@pytest.mark.parametrize('technology', ['illumina', 'nanopore'])
+@pytest.mark.parametrize('compressed', [False, True])
+@pytest.mark.parametrize('content', [b'@', b'\n\r\n \t\n'])
+def test_no_complete_reads_still_prevents_publication(tmp_path, technology, compressed, content):
+    job, _ = reserve(tmp_path, technology, gzip.compress(content, mtime=0) if compressed else content,
+                     '.fastq.gz' if compressed else '.fastq')
+    with pytest.raises(ValidationError, match='no complete'):
+        jobs.run_job(job)
+    assert jobs.read_metadata(job.output_dir)['status'] == 'failed'
+    assert not job.bundle.exists()
+
+
+@pytest.mark.parametrize('technology', ['illumina', 'nanopore'])
+def test_complete_unmapped_reads_remain_valid(tmp_path, technology):
+    record = b'@unmapped\n' + b'N' * 300 + b'\n+\n' + b'I' * 300 + b'\n'
+    job, _ = reserve(tmp_path, technology, record)
+    result = jobs.run_job(job)
+    assert result.tracks[0].total == 1 and result.tracks[0].mapped == 0
+    assert not result.warnings
+    assert jobs.read_metadata(job.output_dir)['status'] == 'completed'
 
 
 @pytest.mark.parametrize('mode', ['bad-header', 'bad-separator', 'short-quality-line', 'overlong-final-quality'])

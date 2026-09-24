@@ -94,7 +94,10 @@ def parse_manifest(path: Path) -> tuple[ReadGroup, ...]:
                     first = manifest.parent / first
                 if second is not None and not second.is_absolute():
                     second = manifest.parent / second
-                groups.append(_read_group(label, technology, layout, first, second, read1, read2 or None))
+                groups.append(_read_group(
+                    label, technology, layout, first, second,
+                    Path(read1).name, Path(read2).name if read2 else None,
+                ))
     except (OSError, UnicodeError) as exc:
         raise ValidationError(f"Could not read manifest {manifest.name}: {exc}") from exc
     if not groups:
@@ -351,6 +354,7 @@ def _records(path: Path) -> Iterator[bytes]:
     """Yield complete validated records while always validating the gzip trailer."""
     lines: list[bytes] = []
     buffer = bytearray()
+    blank_suffix = False
     try:
         for chunk in _decoded_chunks(path):
             buffer.extend(chunk)
@@ -358,8 +362,16 @@ def _records(path: Path) -> Iterator[bytes]:
                 newline = buffer.find(b"\n")
                 if newline < 0:
                     break
-                lines.append(bytes(buffer[: newline + 1]))
+                line = bytes(buffer[: newline + 1])
                 del buffer[: newline + 1]
+                if not lines:
+                    if not line.strip():
+                        # Accept only an EOF suffix, with constant-memory lookahead.
+                        blank_suffix = True
+                        continue
+                    if blank_suffix:
+                        raise ValidationError(f"FASTQ {path.name} has blank lines before another record")
+                lines.append(line)
                 _validate_partial_lines(path, lines)
                 if len(lines) == 4:
                     yield _validated_record(path, lines)
@@ -368,6 +380,10 @@ def _records(path: Path) -> Iterator[bytes]:
         # Already emitted records remain usable; an incomplete buffered record is discarded.
         raise
     if buffer:
+        if not lines and not buffer.strip():
+            return
+        if blank_suffix:
+            raise ValidationError(f"FASTQ {path.name} has blank lines before another record")
         lines.append(bytes(buffer))
         _validate_partial_lines(path, lines)
     if lines:
@@ -398,7 +414,9 @@ def _validate_partial_lines(path: Path, lines: list[bytes]) -> None:
     if len(lines) == 1:
         if not lines[0].startswith(b"@"):
             raise ValidationError(f"FASTQ {path.name} has a record whose header does not begin with '@'")
-        normalize_mate_name(lines[0])
+        # An unterminated bare '@' is a fragment, whereas '@\n' is a bad header.
+        if lines[0] != b"@":
+            normalize_mate_name(lines[0])
     elif len(lines) == 3 and not lines[2].startswith(b"+"):
         raise ValidationError(f"FASTQ {path.name} has a record whose separator does not begin with '+'")
 
@@ -416,6 +434,8 @@ def validate_pair(group: ReadGroup) -> None:
                 if r1 is None or r2 is None:
                     if r1 is not r2:
                         raise ValidationError(f"Paired FASTQ files for {group.label!r} have unequal record counts")
+                    if index == 0:
+                        raise ValidationError(f"Paired input for {group.label!r} has no complete reads")
                     return
                 index += 1
                 _require_mates(r1, r2, group.label, index)
@@ -425,6 +445,8 @@ def validate_pair(group: ReadGroup) -> None:
             while True:
                 r1 = next(records, None)
                 if r1 is None:
+                    if index == 0:
+                        raise ValidationError(f"Paired input for {group.label!r} has no complete reads")
                     return
                 r2 = next(records, None)
                 if r2 is None:
@@ -448,13 +470,19 @@ def validating_unpaired_records(path: Path) -> tuple[Iterator[bytes], list[Input
     warnings: list[InputWarning] = []
 
     def stream() -> Iterator[bytes]:
+        emitted = False
         try:
-            yield from _records(path)
+            for record in _records(path):
+                emitted = True
+                yield record
         except _TruncatedInput as exc:
+            if not emitted:
+                raise ValidationError(f"FASTQ {path.name} has no complete reads") from exc
             code = "truncated_gzip" if exc.gzip_integrity_missing else "truncated_fastq"
             message = TRUNCATION_TEXT + (GZIP_TRUNCATION_TEXT if exc.gzip_integrity_missing else "")
             warnings.append(InputWarning("", "", path.name, code, message))
-            return
+        if not emitted:
+            raise ValidationError(f"FASTQ {path.name} has no complete reads")
 
     return stream(), warnings
 
