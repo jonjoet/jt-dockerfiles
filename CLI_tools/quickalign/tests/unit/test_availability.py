@@ -150,7 +150,9 @@ def test_unsafe_inventory_rejected(tmp_path, unsafe):
     manifest = json.loads(manifest_path.read_text())
     manifest['files'][0]['path'] = unsafe
     manifest_path.write_text(json.dumps(manifest))
-    assert not jobs.discover_jobs(tmp_path)[0]['bundle_available']
+    item, = jobs.discover_jobs(tmp_path)
+    assert not item['bundle_available']
+    assert 'relative path' in item['validation_error'] or 'Non-relative URI' in item['validation_error']
 
 
 @pytest.mark.parametrize('target', ['alignments/reads-one.bam', 'alignments'])
@@ -288,12 +290,15 @@ render_result(config, item, 'result')
 def test_download_rechecks_regular_file_after_metadata_inspection(tmp_path, monkeypatch, replacement):
     job = completed_fixture(tmp_path)
     archive = job.output_dir / (job.bundle.name + '.zip')
+    small_target = tmp_path / 'private-small-file'
+    small_target.write_bytes(b'private')
     original = jobs.downloadable_archive
     def swapped(*args):
         path = original(*args)
         archive.unlink()
         if replacement == 'symlink':
-            archive.symlink_to(job.bundle / 'config.json')
+            # A size check must not accidentally make this symlink test pass.
+            archive.symlink_to(small_target)
         else:
             os.mkfifo(archive)
         return path

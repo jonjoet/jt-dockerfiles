@@ -15,6 +15,18 @@ existing image can be reused:
 BROWSER_TEST_IMAGE=cc_gcev/browser-test:4.3.0 bash tests/browser/verify.sh
 ```
 
+For the four-track bundle produced by the installed CLI, first run
+`tests/verify.sh`, then pass its artifact directory from the current commit:
+
+```bash
+BROWSER_TEST_IMAGE=cc_gcev/browser-test:4.3.0 \
+  bash tests/browser/verify.sh /absolute/path/to/.verification/verify-RUN
+```
+
+This reuses the full suite's resolver checks and renders the real mixed-read
+output, verifying that only the first BAM is initially visible while all four
+remain configured. Use this version for the Windows-test handoff.
+
 Each run preserves `RUN.txt`, a source snapshot, image identities, pytest output,
 render-state JSON, and a screenshot under the printed `.verification/` directory.
 `windows-test.jbrowse/` is the portable bundle to copy onto Windows. Run
