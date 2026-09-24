@@ -67,7 +67,12 @@ def _assert_local_locations(path: Path, root: Path) -> None:
 
 @pytest.mark.parametrize("launcher", ["resolve-local.sh", "resolve-local.ps1"])
 def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: Path, launcher: str):
-    destination = tmp_path / "space $'\"&[](); nonascii-é" / "portable.jbrowse"
+    # A literal backslash is valid on Linux and covered by the POSIX resolver,
+    # but PowerShell treats it as a separator (and Windows forbids it in names).
+    special = "space $'\"&[](); nonascii-é"
+    if launcher.endswith(".sh"):
+        special += "\\backslash"
+    destination = tmp_path / special / "portable.jbrowse"
     destination.parent.mkdir()
     shutil.copytree(completed_bundle, destination)
     if launcher.endswith(".ps1"):
