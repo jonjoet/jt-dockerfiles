@@ -58,6 +58,8 @@ class UiConfig:
         server_limit = positive(env, 'STREAMLIT_SERVER_MAX_UPLOAD_SIZE', 128)
         if per_file > server_limit:
             raise ValidationError('Upload limit exceeds Streamlit server upload limit')
+        if positive(env, 'QUICKALIGN_MAX_THREADS', 4) < 2:
+            raise ValidationError('At least two threads are required for streaming alignment')
         return cls(roots, output, work,
                    positive(env, 'QUICKALIGN_MAX_UPLOAD_FILES', 16), per_file * 1024**2,
                    positive(env, 'QUICKALIGN_MAX_UPLOAD_TOTAL_MIB', 512) * 1024**2,

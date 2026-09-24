@@ -79,7 +79,7 @@ def display_name(source):
 def validate_submission(config, submission):
     if not submission.name.strip() or not submission.rows:
         raise ValidationError('Provide a sample name and at least one read group')
-    if not 1 <= submission.threads <= config.max_threads:
+    if not 2 <= submission.threads <= config.max_threads:
         raise ValidationError('Thread count exceeds the configured range')
     count = total = 0
     for source, kind in _sources(submission):

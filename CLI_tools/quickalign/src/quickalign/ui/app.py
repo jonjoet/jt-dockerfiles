@@ -113,7 +113,7 @@ def render_new(config):
         st.session_state.next_row_id += 1
         st.rerun()
     name = st.text_input('Sample name', value='sample', key='sample_name')
-    threads = st.number_input('Threads', min_value=1, max_value=config.max_threads,
+    threads = st.number_input('Threads', min_value=2, max_value=config.max_threads,
                                value=min(4, config.max_threads), step=1)
     with st.expander('Advanced'):
         sort_memory = st.selectbox('Sort memory per worker', ['256M', '512M', '1G', '2G'])
