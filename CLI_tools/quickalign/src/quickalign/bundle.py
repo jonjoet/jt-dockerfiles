@@ -23,6 +23,7 @@ SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_CONFIG_BYTES = 16 * 1024 * 1024
 ANNOTATION_TRACK_ID = "annotation"
+LOCAL_ROOT_TOKEN = "__QUICKALIGN_BUNDLE_ROOT__"
 TEXT_ATTRIBUTES = "Name,ID,gene,gene_name,locus_tag,Alias"
 REQUIRED_FILES = (
     "config.json",
@@ -115,14 +116,9 @@ def _config(prepared: PreparedInputs, tracks: Iterable[TrackResult]) -> dict[str
         )
 
     first_contig, first_length = next(iter(prepared.contigs.items()))
-    visible = [
-        {"id": "reference", "type": "ReferenceSequenceTrack", "configuration": ref_track_id},
-        {"id": "annotation", "type": "FeatureTrack", "configuration": ANNOTATION_TRACK_ID},
-    ]
+    visible = [ref_track_id, ANNOTATION_TRACK_ID]
     if tracks:
-        visible.append(
-            {"id": tracks[0].track_id, "type": "AlignmentsTrack", "configuration": tracks[0].track_id}
-        )
+        visible.append(tracks[0].track_id)
     return {
         "assemblies": [
             {
@@ -142,134 +138,98 @@ def _config(prepared: PreparedInputs, tracks: Iterable[TrackResult]) -> dict[str
         "tracks": jbrowse_tracks,
         "defaultSession": {
             "name": "quickalign default",
-            "view": {
+            "views": [{
                 "id": "linearGenomeView",
                 "type": "LinearGenomeView",
-                "displayedRegions": [
-                    {
-                        "assemblyName": assembly_name,
-                        "refName": first_contig,
-                        "start": 0,
-                        "end": min(first_length, 100_000),
-                    }
-                ],
-                "tracks": visible,
-            },
+                "init": {
+                    "assembly": assembly_name,
+                    "loc": f"{first_contig}:1..{min(first_length, 100_000)}",
+                    "tracks": visible,
+                },
+            }],
         },
     }
 
 
-_SH_RESOLVER = r'''#!/bin/sh
-set -eu
-bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-exec python3 - "$bundle_dir" <<'PY'
-import json, os, pathlib, sys, tempfile
-root = pathlib.Path(sys.argv[1]).resolve(strict=True)
-source = root / "local.template.jbrowse"
-name = root.name[:-8] if root.name.endswith(".jbrowse") else root.name
-target = root / (name + ".local.jbrowse")
-
-def convert(value):
+def _localize_config(value: Any) -> Any:
+    """Create the Desktop template without changing portable configuration."""
     if isinstance(value, list):
-        return [convert(item) for item in value]
+        return [_localize_config(item) for item in value]
     if not isinstance(value, dict):
         return value
-    if "uri" in value:
-        uri = value["uri"]
-        if not isinstance(uri, str) or not uri or "\\" in uri:
-            raise SystemExit("unsafe bundle URI")
-        parts = pathlib.PurePosixPath(uri).parts
-        if not parts or uri.startswith("/") or ".." in parts or ":" in parts[0]:
-            raise SystemExit("unsafe bundle URI")
-        resolved = (root / pathlib.Path(*parts)).resolve(strict=True)
-        try:
-            resolved.relative_to(root)
-        except ValueError:
-            raise SystemExit("bundle URI escapes bundle")
-        result = {k: convert(v) for k, v in value.items() if k not in ("uri", "locationType")}
-        result.update(locationType="LocalPathLocation", localPath=str(resolved))
-        return result
-    return {key: convert(item) for key, item in value.items()}
+    result = {key: _localize_config(item) for key, item in value.items()}
+    if "localPath" in result or result.get("locationType") == "LocalPathLocation":
+        raise ValidationError("Portable config must not contain local filesystem locations")
+    if "uri" in result:
+        relative = _safe_relative(result["uri"], context="local template")
+        if "baseUri" in result:
+            raise ValidationError("Portable config locations must not contain baseUri")
+        result.pop("uri")
+        result.update(locationType="LocalPathLocation", localPath=f"{LOCAL_ROOT_TOKEN}/{relative}")
+    return result
 
-data = convert(json.loads(source.read_text(encoding="utf-8")))
-fd, temporary = tempfile.mkstemp(prefix=target.name + ".", dir=root)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-        json.dump(data, stream, ensure_ascii=False, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, target)
-finally:
-    try: os.unlink(temporary)
-    except FileNotFoundError: pass
-print(target)
-PY
+
+_SH_RESOLVER = r'''#!/usr/bin/env bash
+set -euo pipefail
+shopt -u patsub_replacement 2>/dev/null || true
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+bundle_name=${root##*/}
+sample=${bundle_name%.jbrowse}
+template="$root/local.template.jbrowse"
+out="$root/$sample.local.jbrowse"
+tmp="$out.tmp.$$"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+escaped=$root
+escaped=${escaped//\\/\\\\}
+escaped=${escaped//\"/\\\"}
+escaped=${escaped//$'\t'/\\t}
+escaped=${escaped//$'\r'/\\r}
+escaped=${escaped//$'\n'/\\n}
+for ((code=1; code<32; code++)); do
+  printf -v character '%b' "\\$(printf '%03o' "$code")"
+  printf -v replacement '\\u%04x' "$code"
+  escaped=${escaped//"$character"/$replacement}
+done
+while IFS= read -r line || [[ -n "$line" ]]; do
+  printf '%s\n' "${line//__QUICKALIGN_BUNDLE_ROOT__/$escaped}"
+done < "$template" > "$tmp"
+mv -f -- "$tmp" "$out"
+trap - EXIT HUP INT TERM
+printf '%s\n' "$out"
 '''
 
 
 _PS1_RESOLVER = r'''$ErrorActionPreference = 'Stop'
-$Root = [IO.Path]::GetFullPath($PSScriptRoot)
-$Template = Join-Path $Root 'local.template.jbrowse'
-$Leaf = Split-Path $Root -Leaf
-$Stem = if ($Leaf.EndsWith('.jbrowse')) { $Leaf.Substring(0, $Leaf.Length - 8) } else { $Leaf }
-$Target = Join-Path $Root ($Stem + '.local.jbrowse')
-
-function Convert-Node($Node) {
-    if ($null -eq $Node -or $Node -is [string] -or $Node -is [ValueType]) { return $Node }
-    if ($Node -is [System.Array]) {
-        $Items = [System.Collections.Generic.List[object]]::new()
-        foreach ($Item in $Node) {
-            [object]$Converted = Convert-Node $Item
-            $Items.Add($Converted)
-        }
-        # Unary comma prevents the success pipeline from unrolling the result.
-        return ,$Items.ToArray()
-    }
-    $Properties = @($Node.PSObject.Properties)
-    $UriProperty = $Properties | Where-Object Name -eq 'uri'
-    if ($UriProperty) {
-        $Uri = [string]$UriProperty.Value
-        if ([string]::IsNullOrWhiteSpace($Uri) -or [IO.Path]::IsPathRooted($Uri) -or $Uri.Contains('\') -or $Uri.Contains('://')) {
-            throw 'Unsafe bundle URI'
-        }
-        $Segments = $Uri.Split('/')
-        if ($Segments -contains '..' -or $Segments -contains '') { throw 'Unsafe bundle URI' }
-        $Relative = $Segments -join [IO.Path]::DirectorySeparatorChar
-        $Resolved = (Resolve-Path -LiteralPath (Join-Path $Root $Relative)).Path
-        $Prefix = $Root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-        if (-not $Resolved.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Bundle URI escapes bundle' }
-        $Out = [ordered]@{}
-        foreach ($Property in $Properties) {
-            if ($Property.Name -notin @('uri', 'locationType')) { $Out[$Property.Name] = Convert-Node $Property.Value }
-        }
-        $Out['locationType'] = 'LocalPathLocation'
-        $Out['localPath'] = $Resolved
-        return [PSCustomObject]$Out
-    }
-    $Out = [ordered]@{}
-    foreach ($Property in $Properties) { $Out[$Property.Name] = Convert-Node $Property.Value }
-    return [PSCustomObject]$Out
-}
-
-$Data = Convert-Node (Get-Content -LiteralPath $Template -Raw -Encoding UTF8 | ConvertFrom-Json)
-$Temporary = Join-Path $Root ($Stem + '.local.jbrowse.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+$root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+$bundleName = Split-Path -Leaf $root
+$sample = $bundleName -replace '\.jbrowse$', ''
+$template = Join-Path $root 'local.template.jbrowse'
+$out = Join-Path $root ($sample + '.local.jbrowse')
+$tmp = $out + '.tmp.' + $PID
+$rootJson = ConvertTo-Json -Compress $root
+$escaped = $rootJson.Substring(1, $rootJson.Length - 2)
+$content = [IO.File]::ReadAllText($template).Replace('__QUICKALIGN_BUNDLE_ROOT__', $escaped)
 try {
-    $Data | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $Temporary -Encoding UTF8
-    Move-Item -LiteralPath $Temporary -Destination $Target -Force
+    [IO.File]::WriteAllText($tmp, $content, [Text.UTF8Encoding]::new($false))
+    Move-Item -Force -LiteralPath $tmp -Destination $out
 } finally {
-    if (Test-Path -LiteralPath $Temporary) { Remove-Item -LiteralPath $Temporary -Force }
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
 }
-Write-Output $Target
+Write-Host "Created $out"
+Write-Host 'Open this file in JBrowse Desktop 4.3.0.'
 '''
 
 
 _CMD_RESOLVER = r'''@echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0resolve-local.ps1"
+where pwsh >nul 2>nul
+if %errorlevel% equ 0 (
+  pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0resolve-local.ps1"
+) else (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0resolve-local.ps1"
+)
 exit /b %ERRORLEVEL%
 '''
-
 
 def _warnings_text(warnings: Iterable[InputWarning]) -> list[str]:
     return [f"[{item.code}] {item.group_label} / {item.input_name}: {item.message}" for item in warnings]
@@ -282,9 +242,15 @@ def _write_readmes(root: Path, sample: str, warnings: tuple[InputWarning, ...]) 
 
 Opening the bundle
 1. Keep this entire directory together.
-2. On Linux/macOS, run ./resolve-local.sh from a terminal.
-3. On Windows, double-click resolve-local.cmd, or run resolve-local.ps1 in PowerShell.
-4. Open the generated {sample}.local.jbrowse file in JBrowse Desktop.
+2. On Linux/macOS, run bash resolve-local.sh from a terminal (Bash required; no Python needed).
+3. On Windows, double-click resolve-local.cmd (prefers PowerShell 7/pwsh, falls back to Windows PowerShell),
+   or run resolve-local.ps1 in PowerShell.
+4. Open the generated {sample}.local.jbrowse file in JBrowse Desktop 4.3.0.
+   If the folder was renamed, the generated filename uses its current name.
+
+The initial view shows the reference, annotation and first BAM at the first contig
+(up to 100,000 bases). Select additional BAM tracks through the track selector.
+config.json stays portable and unchanged; local.template.jbrowse uses a bundle-root token.
 
 The generated local file contains paths for the bundle's current location. Run the resolver
 again after moving the directory. Browser-downloaded archives may be blocked by Windows
@@ -448,7 +414,7 @@ def build_bundle(
     # text-index adds the aggregate textSearchAdapter to config.json.
     config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     _write_json(root / "config.json", config)
-    (root / "local.template.jbrowse").write_bytes(_json_bytes(config))
+    (root / "local.template.jbrowse").write_bytes(_json_bytes(_localize_config(config)))
     (root / "resolve-local.sh").write_text(_SH_RESOLVER, encoding="utf-8", newline="\n")
     os.chmod(root / "resolve-local.sh", 0o755)
     (root / "resolve-local.ps1").write_text(_PS1_RESOLVER, encoding="utf-8", newline="\n")
@@ -633,6 +599,31 @@ def _validate_config_contract(config: dict[str, Any], manifest: dict[str, Any]) 
     if bam_track_ids != seen_track_ids:
         raise ValidationError("config.json alignment tracks do not match manifest read groups")
 
+    session = config.get("defaultSession")
+    views = session.get("views") if isinstance(session, dict) else None
+    if not isinstance(views, list) or len(views) != 1 or not isinstance(views[0], dict):
+        raise ValidationError("config.json must initialize one defaultSession.views entry")
+    view = views[0]
+    init = view.get("init")
+    contigs = reference.get("contigs")
+    if not isinstance(contigs, list) or not contigs or not isinstance(contigs[0], dict):
+        raise ValidationError("Manifest reference contigs are missing")
+    first = contigs[0]
+    length = first.get("length")
+    if not isinstance(first.get("name"), str) or type(length) is not int or length < 1:
+        raise ValidationError("Manifest reference contig is invalid")
+    visible = [sequence.get("trackId"), ANNOTATION_TRACK_ID]
+    if groups:
+        visible.append(groups[0]["track_id"])
+    if (
+        view.get("type") != "LinearGenomeView"
+        or not isinstance(init, dict)
+        or init.get("assembly") != assembly.get("name")
+        or init.get("loc") != f"{first['name']}:1..{min(length, 100_000)}"
+        or init.get("tracks") != visible
+    ):
+        raise ValidationError("config.json default view must initialize the bounded locus and visible track IDs")
+
 
 def validate_bundle(path: Path) -> dict[str, Any]:
     """Validate inventory integrity and all portable adapter paths."""
@@ -706,8 +697,8 @@ def validate_bundle(path: Path) -> dict[str, Any]:
     template = _read_json(
         root / "local.template.jbrowse", label="local.template.jbrowse", maximum=MAX_CONFIG_BYTES
     )
-    if template != config:
-        raise ValidationError("Local template does not match portable config")
+    if template != _localize_config(config):
+        raise ValidationError("Local template does not match localized portable config")
     signature_after = _bundle_signature(root)
     if signature_after != signature_before:
         raise ValidationError("Bundle changed while it was being validated")

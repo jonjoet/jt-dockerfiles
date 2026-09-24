@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from quickalign.bundle import ANNOTATION_TRACK_ID, TEXT_ATTRIBUTES, build_bundle, validate_bundle
+from quickalign.bundle import ANNOTATION_TRACK_ID, TEXT_ATTRIBUTES, _localize_config, build_bundle, validate_bundle
 from quickalign.errors import ValidationError
 from quickalign.models import InputWarning, PreparedInputs, ReadGroup, ReservedJob, RunSpec, TrackResult
 
@@ -86,12 +86,17 @@ def _replace_config(job, config):
 
     payload = (json.dumps(config, indent=2, sort_keys=True) + "\n").encode()
     (job.partial / "config.json").write_bytes(payload)
-    (job.partial / "local.template.jbrowse").write_bytes(payload)
+    try:
+        localized = _localize_config(config)
+    except ValidationError:
+        localized = config  # Let portable validation report intentionally invalid test data.
+    template_payload = (json.dumps(localized, indent=2, sort_keys=True) + "\n").encode()
+    (job.partial / "local.template.jbrowse").write_bytes(template_payload)
     manifest_path = job.partial / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     replacements = {
         "config.json": payload,
-        "local.template.jbrowse": payload,
+        "local.template.jbrowse": template_payload,
     }
     for record in manifest["files"]:
         replacement = replacements.get(record["path"])
@@ -124,9 +129,12 @@ def test_builds_deterministic_relative_bundle_and_manifest(tmp_path, monkeypatch
         )
     ]
     config = json.loads((job.partial / "config.json").read_text())
-    assert config == json.loads((job.partial / "local.template.jbrowse").read_text())
+    assert _localize_config(config) == json.loads((job.partial / "local.template.jbrowse").read_text())
     assert config["tracks"][1]["category"] == ["Alignments", "Illumina"]
-    assert config["defaultSession"]["view"]["displayedRegions"][0]["end"] == 4
+    assert config["defaultSession"]["views"][0]["init"] == {
+        "assembly": "assembly", "loc": "ctg:1..4",
+        "tracks": ["assembly-ReferenceSequenceTrack", "annotation", "reads-one"],
+    }
     assert manifest["warnings"][0]["code"] == "truncated"
     assert manifest["read_groups"][0]["counts"] == {"mapped": 1, "total": 1}
     memory = manifest["run"].pop("container_memory")
@@ -154,7 +162,7 @@ def test_shell_resolver_survives_relocation_and_generated_file_is_uninventoried(
     job.partial.rename(relocated)
 
     completed = subprocess.run(
-        ["/bin/sh", str(relocated / "resolve-local.sh")],
+        ["/bin/bash", str(relocated / "resolve-local.sh")],
         cwd=tmp_path,
         check=True,
         stdout=subprocess.PIPE,
@@ -252,3 +260,25 @@ def test_validation_cache_uses_full_stat_signature_and_returns_a_copy(tmp_path, 
     config.write_bytes(config.read_bytes() + b" ")
     with pytest.raises(AssertionError, match="rehash"):
         validate_bundle(job.partial)
+
+
+@pytest.mark.parametrize("mutation", ["singular", "missing-tracks", "unbounded"])
+def test_validator_rejects_uninitialized_default_view(tmp_path, mutation):
+    job, _ = _build(tmp_path)
+    config = json.loads((job.partial / "config.json").read_text())
+    session = config["defaultSession"]
+    if mutation == "singular":
+        session["view"] = session.pop("views")[0]
+    elif mutation == "missing-tracks":
+        session["views"][0]["init"]["tracks"] = []
+    else:
+        session["views"][0]["init"]["loc"] = "ctg:1..100000000"
+    _replace_config(job, config)
+    with pytest.raises(ValidationError, match="defaultSession.views|default view"):
+        validate_bundle(job.partial)
+
+
+@pytest.mark.parametrize("uri", ["../outside", "/absolute", "https://example.org/file", "file?query"])
+def test_localization_rejects_unsafe_uris(uri):
+    with pytest.raises(ValidationError, match="relative"):
+        _localize_config({"locationType": "UriLocation", "uri": uri})

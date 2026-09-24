@@ -51,8 +51,12 @@ def completed_bundle(tmp_path: Path) -> Path:
     bam = partial / "alignments" / "reads.bam"
     bai = partial / "alignments" / "reads.bam.bai"
     flagstat = partial / "alignments" / "reads.flagstat.txt"
-    bam.write_bytes(b"fixture bam")
-    bai.write_bytes(b"fixture bai")
+    sam = partial / "alignments" / "reads.sam"
+    sam.write_text("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:ctg\tLN:12\n"
+                   "read1\t0\tctg\t1\t60\t12M\t*\t0\t0\tACGTACGTACGT\tIIIIIIIIIIII\n")
+    subprocess.run(["samtools", "view", "-b", "-o", str(bam), str(sam)], check=True)
+    subprocess.run(["samtools", "index", str(bam)], check=True)
+    sam.unlink()
     flagstat.write_text("1 + 0 in total\n", encoding="ascii")
     final = partial.with_name("fixture.jbrowse")
     spec = RunSpec(Path("original.fa"), Path("original.gff3"), (group,), "fixture")
@@ -107,17 +111,18 @@ def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: 
     # but PowerShell treats it as a separator (and Windows forbids it in names).
     special = "space $'\"&[](); nonascii-é"
     if launcher.endswith(".sh"):
-        special += "\\backslash"
+        special += "\\backslash\t\n\x01"
     destination = tmp_path / special / "portable.jbrowse"
     destination.parent.mkdir()
     shutil.copytree(completed_bundle, destination)
+    portable_bytes = (destination / "config.json").read_bytes()
     if launcher.endswith(".ps1"):
         pwsh = shutil.which("pwsh")
         if pwsh is None:
             pytest.skip("PowerShell test image is not in use")
         argv = [pwsh, "-NoProfile", "-File", str(destination / launcher)]
     else:
-        argv = ["/bin/sh", str(destination / launcher)]
+        argv = ["/bin/bash", str(destination / launcher)]
     subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True, text=True)
     local_path = destination / "portable.local.jbrowse"
     _assert_local_locations(local_path, destination)
@@ -129,3 +134,15 @@ def test_relocated_resolver_completed_fixture(completed_bundle: Path, tmp_path: 
     assert probe["singleton"] == [{"value": "only"}]
     assert probe["nested"] == [["one"], []]
     assert validate_bundle(destination)["sample_name"] == "fixture"
+
+    # Resolve the same bundle again after a second move, overwriting the stale local config.
+    moved = tmp_path / "second move & unicode-é" / "portable.jbrowse"
+    moved.parent.mkdir()
+    destination.rename(moved)
+    argv[-1] = str(moved / launcher)
+    subprocess.run(argv, cwd=tmp_path, check=True, capture_output=True, text=True)
+    _assert_local_locations(moved / "portable.local.jbrowse", moved)
+    assert (moved / "config.json").read_bytes() == portable_bytes
+    assert _normalize_local_locations(
+        json.loads((moved / "portable.local.jbrowse").read_text(encoding="utf-8-sig")), moved
+    ) == portable
