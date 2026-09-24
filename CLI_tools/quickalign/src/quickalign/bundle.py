@@ -50,6 +50,13 @@ def _display_name(path: Path) -> str:
     return Path(path).name
 
 
+def _read_display(group: Any, which: str) -> str | None:
+    path = getattr(group, which)
+    if path is None:
+        return None
+    return getattr(group, f"{which}_display", None) or _display_name(path)
+
+
 def _config(prepared: PreparedInputs, tracks: Iterable[TrackResult]) -> dict[str, Any]:
     tracks = tuple(tracks)
     if not prepared.contigs:
@@ -60,7 +67,7 @@ def _config(prepared: PreparedInputs, tracks: Iterable[TrackResult]) -> dict[str
         {
             "type": "FeatureTrack",
             "trackId": ANNOTATION_TRACK_ID,
-            "name": _display_name(prepared.annotation),
+            "name": getattr(prepared, "annotation_display", None) or _display_name(prepared.annotation),
             "assemblyNames": [assembly_name],
             "adapter": {
                 "type": "Gff3TabixAdapter",
@@ -84,8 +91,8 @@ def _config(prepared: PreparedInputs, tracks: Iterable[TrackResult]) -> dict[str
                 "metadata": {
                     "technology": group.technology,
                     "layout": group.layout,
-                    "read1": _display_name(group.read1),
-                    "read2": _display_name(group.read2) if group.read2 else None,
+                    "read1": _read_display(group, "read1"),
+                    "read2": _read_display(group, "read2"),
                     "readGroupId": track.track_id,
                 },
                 "adapter": {
@@ -294,15 +301,19 @@ def _iter_inventory_files(root: Path) -> Iterable[Path]:
 
 
 def _file_record(root: Path, path: Path) -> dict[str, Any]:
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "size": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    return {
-        "path": path.relative_to(root).as_posix(),
-        "size": path.stat().st_size,
-        "sha256": digest.hexdigest(),
-    }
+    return digest.hexdigest()
 
 
 def _manifest(
@@ -319,12 +330,12 @@ def _manifest(
         "application": {"name": "quickalign", "version": __version__},
         "sample_name": job.spec.name,
         "reference": {
-            "display_name": _display_name(job.spec.reference),
+            "display_name": getattr(prepared, "reference_display", None) or _display_name(job.spec.reference),
             "files": ["reference/assembly.fasta", "reference/assembly.fasta.fai"],
             "contigs": [{"name": name, "length": length} for name, length in prepared.contigs.items()],
         },
         "annotation": {
-            "display_name": _display_name(job.spec.annotation),
+            "display_name": getattr(prepared, "annotation_display", None) or _display_name(job.spec.annotation),
             "track_id": ANNOTATION_TRACK_ID,
             "files": ["annotation/features.gff3.gz", "annotation/features.gff3.gz.tbi"],
         },
@@ -335,8 +346,8 @@ def _manifest(
                 "layout": track.group.layout,
                 "track_id": track.track_id,
                 "input_display_names": [
-                    _display_name(track.group.read1),
-                    *([_display_name(track.group.read2)] if track.group.read2 else []),
+                    _read_display(track.group, "read1"),
+                    *([_read_display(track.group, "read2")] if track.group.read2 else []),
                 ],
                 "files": [
                     f"alignments/{track.track_id}.bam",
@@ -487,7 +498,7 @@ def validate_bundle(path: Path) -> dict[str, Any]:
         candidate = _contained_regular_file(root, relative, context="manifest inventory")
         if type(record.get("size")) is not int or record["size"] != candidate.stat().st_size:
             raise ValidationError(f"Size mismatch for {name}")
-        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        digest = _sha256(candidate)
         if not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", ""))) or digest != record["sha256"]:
             raise ValidationError(f"SHA-256 mismatch for {name}")
 
