@@ -260,23 +260,32 @@ def _gzip_decoded_chunks(path: Path) -> Iterator[bytes]:
                 if fixed[:3] != b"\x1f\x8b\x08" or fixed[3] & 0xE0:
                     raise ValidationError(f"FASTQ {path.name} has an invalid gzip header")
                 flags = fixed[3]
+                header_bytes = bytearray(fixed)
                 if flags & 4:
                     xlen_raw = source.read(2)
                     if len(xlen_raw) < 2:
                         raise _TruncatedInput(True)
+                    header_bytes.extend(xlen_raw)
                     xlen = int.from_bytes(xlen_raw, "little")
-                    if len(source.read(xlen)) < xlen:
+                    extra = source.read(xlen)
+                    if len(extra) < xlen:
                         raise _TruncatedInput(True)
+                    header_bytes.extend(extra)
                 for flag in (8, 16):
                     if flags & flag:
                         while True:
                             char = source.read_byte()
                             if not char:
                                 raise _TruncatedInput(True)
+                            header_bytes.extend(char)
                             if char == b"\0":
                                 break
-                if flags & 2 and len(source.read(2)) < 2:
-                    raise _TruncatedInput(True)
+                if flags & 2:
+                    header_crc = source.read(2)
+                    if len(header_crc) < 2:
+                        raise _TruncatedInput(True)
+                    if int.from_bytes(header_crc, "little") != (zlib.crc32(header_bytes) & 0xFFFF):
+                        raise ValidationError(f"FASTQ {path.name} has a gzip header CRC mismatch")
 
                 decoder = zlib.decompressobj(-zlib.MAX_WBITS)
                 crc = size = 0
@@ -359,8 +368,10 @@ def _validated_record(path: Path, lines: list[bytes]) -> bytes:
     normalize_mate_name(header)
     if not plus.startswith(b"+"):
         raise ValidationError(f"FASTQ {path.name} has a record whose separator does not begin with '+'")
-    if len(sequence.rstrip(b"\r\n")) != len(quality.rstrip(b"\r\n")):
-        if not quality.endswith((b"\n", b"\r")):
+    sequence_length = len(sequence.rstrip(b"\r\n"))
+    quality_length = len(quality.rstrip(b"\r\n"))
+    if sequence_length != quality_length:
+        if quality_length < sequence_length and not quality.endswith((b"\n", b"\r")):
             raise _TruncatedInput(False)
         raise ValidationError(f"FASTQ {path.name} has unequal sequence and quality lengths")
     return b"".join(lines)
@@ -433,6 +444,8 @@ def validating_unpaired_records(path: Path) -> tuple[Iterator[bytes], list[Input
 
 def prepare_inputs(spec: RunSpec, prepared: PreparedInputs | None = None) -> PreparedInputs:
     """Resolve and validate all inputs before external tools run."""
+    if spec.threads < 2:
+        raise ValidationError("Streaming alignment requires at least two requested threads")
     source = prepared or PreparedInputs(spec.reference, spec.annotation, spec.read_groups)
     reference = _require_file(source.reference, "Reference FASTA")
     if reference.name.lower().endswith(".gz"):

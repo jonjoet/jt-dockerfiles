@@ -21,6 +21,10 @@ def _pipeline(
     align_stderr_path = logs / f"{step}.align.stderr.log"
     sort_stderr_path = logs / f"{step}.sort.stderr.log"
     align_stdin = subprocess.PIPE if records is not None else None
+    aligner = sorter = None
+    align_code = sort_code = None
+    stream_error: BaseException | None = None
+    lifecycle_error: BaseException | None = None
     with align_stderr_path.open("wb") as align_err, sort_stderr_path.open("wb") as sort_err:
         try:
             aligner = subprocess.Popen(
@@ -29,7 +33,6 @@ def _pipeline(
             assert aligner.stdout is not None
             sorter = subprocess.Popen(sort, stdin=aligner.stdout, stdout=subprocess.DEVNULL, stderr=sort_err, env=runner.env)
             aligner.stdout.close()
-            stream_error: Exception | None = None
             if records is not None:
                 assert aligner.stdin is not None
                 pipe_open = True
@@ -40,7 +43,7 @@ def _pipeline(
                                 aligner.stdin.write(record)
                             except BrokenPipeError:
                                 pipe_open = False
-                except Exception as exc:
+                except BaseException as exc:
                     stream_error = exc
                 finally:
                     try:
@@ -50,7 +53,39 @@ def _pipeline(
             align_code = aligner.wait()
             sort_code = sorter.wait()
         except OSError as exc:
+            lifecycle_error = exc
             raise CommandError(f"Could not start alignment pipeline for {step}: {exc}", logs=[align_stderr_path, sort_stderr_path]) from exc
+        except BaseException as exc:
+            lifecycle_error = exc
+            raise
+        finally:
+            for stream in (
+                getattr(aligner, "stdin", None), getattr(aligner, "stdout", None),
+                getattr(sorter, "stdin", None), getattr(sorter, "stdout", None),
+            ):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            if stream_error is not None or lifecycle_error is not None:
+                for process in (aligner, sorter):
+                    if process is not None and process.poll() is None:
+                        process.terminate()
+                for process in (aligner, sorter):
+                    if process is not None:
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+            # Covers interruption and failure while launching the second child.
+            if sorter is None:
+                if aligner is not None and aligner.poll() is None:
+                    aligner.terminate()
+                    aligner.wait()
+    if align_code is None or sort_code is None:
+        raise CommandError(f"Alignment pipeline {step} did not start both processes", logs=[align_stderr_path, sort_stderr_path])
     runner.record({
         "step": f"{step}-align", "argv": align, "returncode": align_code,
         "stderr": str(align_stderr_path), "stdout": "pipe:sort",
@@ -73,9 +108,11 @@ def _parse_flagstat(text: str) -> tuple[int, int]:
     total = mapped = 0
     for line in text.splitlines():
         if " in total " in line:
-            total = int(line.split("+", 1)[0].strip())
+            passed, failed = line.split(" in total ", 1)[0].split("+")
+            total = int(passed) + int(failed)
         elif " mapped (" in line:
-            mapped = int(line.split("+", 1)[0].strip())
+            passed, failed = line.split(" mapped (", 1)[0].split("+")
+            mapped = int(passed) + int(failed)
     return mapped, total
 
 
@@ -124,14 +161,16 @@ def build_alignments(job: ReservedJob, prepared: PreparedInputs, runner) -> list
             records, stream_warnings = validating_unpaired_records(group.read1)
             align[-1] = "-"
         sort = sort_argv(bam, sort_dir / track_id, sort_threads, job.spec.sort_memory)
-        _pipeline(runner, track_id, align, sort, records)
-        for warning in stream_warnings:
-            input_name = getattr(group, "read1_display", None) or group.read1.name
-            runner.warnings.append(InputWarning(track_id, group.label, input_name, warning.code, warning.message))
+        try:
+            _pipeline(runner, track_id, align, sort, records)
+        finally:
+            for warning in stream_warnings:
+                input_name = getattr(group, "read1_display", None) or group.read1.name
+                runner.warnings.append(InputWarning(track_id, group.label, input_name, warning.code, warning.message))
         runner.run(f"{track_id}.index", index_argv(bam))
         mapped, total = _verify_bam(
             runner, track_id, bam, read_group_header(track_id, group).replace("\\t", "\t"),
-            max(1, job.spec.threads), flagstat,
+            max(0, job.spec.threads - 1), flagstat,
         )
         results.append(TrackResult(track_id, group, bam, bai, flagstat, mapped, total))
     return results

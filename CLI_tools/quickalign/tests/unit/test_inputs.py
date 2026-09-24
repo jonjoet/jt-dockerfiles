@@ -1,4 +1,5 @@
 import gzip
+import zlib
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,27 @@ def test_plain_partial_quality_is_recoverable(tmp_path):
     assert warnings[0].code == "truncated_fastq"
 
 
+def test_overlong_final_quality_without_newline_is_fatal(tmp_path):
+    path = tmp_path / "reads.fastq"
+    path.write_bytes(b"@read\nAC\n+\nIII")
+    records, _ = validating_unpaired_records(path)
+    with pytest.raises(ValidationError, match="unequal"):
+        list(records)
+
+
+def test_gzip_header_crc_mismatch_is_fatal(tmp_path):
+    original = bytearray(gzip.compress(RECORD1))
+    original[3] |= 2
+    valid_crc = (zlib.crc32(original[:10]) & 0xFFFF).to_bytes(2, "little")
+    payload = original[:10] + valid_crc + original[10:]
+    payload[10] ^= 1
+    path = tmp_path / "reads.fastq.gz"
+    path.write_bytes(payload)
+    records, _ = validating_unpaired_records(path)
+    with pytest.raises(ValidationError, match="header CRC"):
+        list(records)
+
+
 def test_manifest_paths_are_relative_to_manifest(tmp_path):
     reads = tmp_path / "reads.fastq"
     reads.write_bytes(RECORD1)
@@ -71,4 +93,3 @@ def test_manifest_paths_are_relative_to_manifest(tmp_path):
     manifest.write_text("label\ttechnology\tlayout\tread1\tread2\nreads\tnanopore\tsingle\treads.fastq\t\n")
     groups = parse_manifest(manifest)
     assert groups[0].read1 == tmp_path / "reads.fastq"
-

@@ -23,7 +23,7 @@ def allocate_threads(total: int) -> tuple[int, int]:
 
 def read_group_header(track_id: str, group: ReadGroup) -> str:
     platform = "ILLUMINA" if group.technology == "illumina" else "ONT"
-    sample = group.label.replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    sample = "".join(" " if char == "\\" or ord(char) < 32 or ord(char) == 127 else char for char in group.label)
     return f"@RG\\tID:{track_id}\\tSM:{sample}\\tPL:{platform}"
 
 
@@ -101,6 +101,7 @@ class CommandRunner:
     ) -> subprocess.CompletedProcess[bytes]:
         log_root = self.job.output_dir / "logs"
         stderr_path = log_root / f"{step}.stderr.log"
+        captured_stdout_path = log_root / f"{step}.stdout.log"
         captured = subprocess.PIPE if stdout_path is None else None
         try:
             with stderr_path.open("wb") as stderr_handle:
@@ -113,17 +114,17 @@ class CommandRunner:
         except OSError as exc:
             self.record({"step": step, "argv": argv, "error": str(exc), "stderr": str(stderr_path)})
             raise CommandError(f"Could not start {step}: {exc}", command=argv, logs=[stderr_path]) from exc
+        if stdout_path is None:
+            captured_stdout_path.write_bytes(result.stdout or b"")
         record = {
             "step": step, "argv": list(argv), "returncode": result.returncode,
-            "stderr": str(stderr_path),
+            "stderr": str(stderr_path), "stdout": str(stdout_path or captured_stdout_path),
         }
-        if stdout_path is not None:
-            record["stdout"] = str(stdout_path)
         self.record(record)
         if result.returncode:
             raise CommandError(
                 f"{step} failed with exit code {result.returncode}", command=argv,
-                returncode=result.returncode, logs=[stderr_path] + ([stdout_path] if stdout_path else []),
+                returncode=result.returncode, logs=[stderr_path, stdout_path or captured_stdout_path],
             )
         return result
 

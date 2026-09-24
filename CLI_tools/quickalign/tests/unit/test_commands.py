@@ -1,10 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quickalign.commands import (
     align_argv, allocate_threads, bgzip_argv, bwa_index_argv, faidx_argv,
-    index_argv, sort_argv, tabix_argv,
+    index_argv, sort_argv, tabix_argv, CommandRunner,
 )
 from quickalign.models import ReadGroup
 
@@ -39,3 +40,14 @@ def test_exact_index_sort_and_annotation_argv():
     assert bgzip_argv(Path("x.gff3")) == ["bgzip", "-c", "x.gff3"]
     assert tabix_argv(Path("x.gff3.gz")) == ["tabix", "-f", "-p", "gff", "x.gff3.gz"]
 
+
+def test_runner_preserves_stdout_and_stderr_logs(tmp_path):
+    output = tmp_path / "output"
+    work = tmp_path / "work"
+    output.mkdir()
+    work.mkdir()
+    runner = CommandRunner(SimpleNamespace(output_dir=output, work=work))
+    result = runner.run("probe", ["python", "-c", "import sys; print('out'); print('err', file=sys.stderr)"])
+    assert result.stdout == b"out\n"
+    assert (output / "logs/probe.stdout.log").read_bytes() == b"out\n"
+    assert (output / "logs/probe.stderr.log").read_bytes() == b"err\n"
