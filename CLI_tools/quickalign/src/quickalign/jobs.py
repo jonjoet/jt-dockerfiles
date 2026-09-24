@@ -1,6 +1,6 @@
 """Durable shared lifecycle; completed metadata is the publication authority."""
 from __future__ import annotations
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -207,7 +207,10 @@ def run_job(job, prepared_inputs=None):
         update_metadata(job, status="completed", stage="completed", finished=timestamp(),
                         bundle=job.bundle.name, commands=runner.records,
                         warnings=[asdict(w) for w in warnings], tracks=[_track_metadata(t) for t in tracks])
-        result = JobResult(job.job_id, job.output_dir, job.bundle, tuple(warnings), tuple(tracks))
+        published_tracks = tuple(replace(t, bam=job.bundle / t.bam.relative_to(job.partial),
+                                        bai=job.bundle / t.bai.relative_to(job.partial),
+                                        flagstat=job.bundle / t.flagstat.relative_to(job.partial)) for t in tracks)
+        result = JobResult(job.job_id, job.output_dir, job.bundle, tuple(warnings), published_tracks)
     except BaseException as exc:
         if runner is not None:
             try:
