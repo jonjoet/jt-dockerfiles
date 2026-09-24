@@ -129,3 +129,15 @@ def test_keep_work_and_double_reservation(monkeypatch, tmp_path):
     with pytest.raises(ValidationError):
         jobs.run_job(job)
     assert jobs.read_metadata(job.output_dir)['status'] == 'completed'
+
+
+@pytest.mark.parametrize('field,value', [('status', []), ('warnings', 'oops'),
+                                        ('failure', 'oops'), ('tracks', [1]),
+                                        ('warnings', [{'message': []}])])
+def test_malformed_metadata_is_not_discovered(tmp_path, field, value):
+    output = tmp_path / 'outputs'
+    job = jobs.reserve_job('job', output / 'job', tmp_path / 'work', spec())
+    data = jobs.read_metadata(job.output_dir)
+    data[field] = value
+    jobs.atomic_json(job.output_dir / 'job.json', data)
+    assert jobs.discover_jobs(output) == []

@@ -64,14 +64,35 @@ def read_metadata(output_dir):
         raise ValidationError("Invalid job metadata")
     if path.stat().st_size > MAX_METADATA_BYTES:
         raise ValidationError("Job metadata exceeds its size limit")
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (ValueError, RecursionError) as exc:
+        raise ValidationError("Malformed job metadata") from exc
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise ValidationError("Unsupported job metadata schema")
     if not isinstance(value.get("job_id"), str) or not JOB_ID.fullmatch(value["job_id"]):
         raise ValidationError("Invalid job identifier")
-    if value.get("status") not in {"running", "failed", "completed"}:
+    if not isinstance(value.get("status"), str) or value["status"] not in {"running", "failed", "completed"}:
         raise ValidationError("Invalid job status")
+    if not isinstance(value.get("name"), str) or not NAME.fullmatch(value["name"]):
+        raise ValidationError("Invalid job name")
+    for key in ("warnings", "tracks"):
+        entries = value.get(key, [])
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            raise ValidationError("Invalid job summary")
+    for warning in value.get("warnings", []):
+        if any(not isinstance(warning.get(key, ""), str)
+               for key in ("group_id", "group_label", "input_name", "code", "message")):
+            raise ValidationError("Invalid input warning")
+    for track in value.get("tracks", []):
+        if not isinstance(track.get("label", ""), str):
+            raise ValidationError("Invalid track label")
+        if any(not isinstance(track.get(key, 0), int) for key in ("mapped", "total")):
+            raise ValidationError("Invalid track counts")
+    failure = value.get("failure")
+    if failure is not None and (not isinstance(failure, dict) or not isinstance(failure.get("message", ""), str)):
+        raise ValidationError("Invalid failure summary")
     return value
 
 
