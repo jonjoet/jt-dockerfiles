@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import re
 from pathlib import Path
 
 from .commands import (
@@ -50,6 +51,10 @@ def _pipeline(
                         aligner.stdin.close()
                     except BrokenPipeError:
                         pass
+            if stream_error is not None:
+                for process in (aligner, sorter):
+                    if process.poll() is None:
+                        process.terminate()
             align_code = aligner.wait()
             sort_code = sorter.wait()
         except OSError as exc:
@@ -107,12 +112,15 @@ def _pipeline(
 def _parse_flagstat(text: str) -> tuple[int, int]:
     total = mapped = 0
     for line in text.splitlines():
-        if " in total " in line:
-            passed, failed = line.split(" in total ", 1)[0].split("+")
-            total = int(passed) + int(failed)
-        elif " mapped (" in line:
-            passed, failed = line.split(" mapped (", 1)[0].split("+")
-            mapped = int(passed) + int(failed)
+        match = re.match(r"^(\d+) \+ (\d+) (.*)$", line)
+        if not match:
+            continue
+        count = int(match.group(1)) + int(match.group(2))
+        description = match.group(3)
+        if description.startswith("in total "):
+            total = count
+        elif description.startswith("mapped ("):
+            mapped = count
     return mapped, total
 
 
