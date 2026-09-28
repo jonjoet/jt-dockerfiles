@@ -1,0 +1,20 @@
+{
+  "assemblies": [
+    {
+      "name": "demo-two",
+      "sequence": {
+        "type": "ReferenceSequenceTrack",
+        "trackId": "demo-two-ReferenceSequenceTrack",
+        "adapter": {
+          "type": "IndexedFastaAdapter",
+          "fastaLocation": {
+            "uri": "reference/demo.fa"
+          },
+          "faiLocation": {
+            "uri": "reference/demo.fa.fai"
+          }
+        }
+      }
+    }
+  ]
+}

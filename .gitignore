@@ -4,3 +4,5 @@
 __pycache__/
 *.pyc
 Services/Plasmidsaurus_AutoDownloader/tests/runs/
+Webservers/jbrowser/.env
+Webservers/jbrowser/.local-bundles/

@@ -1,0 +1,23 @@
+services:
+  jbrowser:
+    build:
+      context: .
+      args:
+        JBROWSE_VERSION: "4.3.0"
+        JBROWSE_SHA256: "a9d42417102ee088a1cbf85c6d857c1065d66984ea6c56f3115ef9dd56d76702"
+    image: jbrowser:4.3.0
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "${JBROWSER_BIND:-127.0.0.1}:${JBROWSER_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: "${JBROWSER_BUNDLES:-./tests/fixtures/bundles}"
+        target: /data/bundles
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,mode=1777

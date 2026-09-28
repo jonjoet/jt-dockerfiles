@@ -1,0 +1,6 @@
+.git
+.env
+.local-bundles
+README.md
+compose.yaml
+tests

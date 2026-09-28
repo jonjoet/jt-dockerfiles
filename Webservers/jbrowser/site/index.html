@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>JBrowse configurations</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="static/styles.css">
+  <script type="module" src="static/app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">JBrowse Web</p>
+        <h1>Available configurations</h1>
+        <p class="lede">Configurations are discovered recursively and grouped by their containing folder.</p>
+      </div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+
+    <section class="controls" aria-label="Configuration filters">
+      <label>
+        Search
+        <input id="search" type="search" placeholder="Filter by path" autocomplete="off">
+      </label>
+    </section>
+
+    <p id="status" role="status" aria-live="polite">Loading configurations...</p>
+
+    <div id="configuration-groups" class="groups"></div>
+  </main>
+</body>
+</html>
