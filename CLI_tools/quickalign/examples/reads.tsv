@@ -1,0 +1,3 @@
+label	technology	layout	read1	read2
+group1	illumina	paired	group1_R1.fastq.gz	group1_R2.fastq.gz
+group2	illumina	paired	group2_R1.fastq.gz	group2_R2.fastq.gz

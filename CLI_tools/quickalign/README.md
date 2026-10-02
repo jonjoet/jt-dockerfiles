@@ -77,6 +77,15 @@ Long reads	nanopore	single	nanopore.fastq.gz
 Manifest source paths are used to open the reads. Portable metadata and warnings
 use their basenames; explicit track labels are preserved.
 
+For an editable launcher, use [`examples/run.sh`](examples/run.sh) and
+[`examples/reads.tsv`](examples/reads.tsv). Copy the TSV into your input directory,
+replace the example read filenames (keep actual tabs), and edit the variables at
+the top of the script. Run `sh examples/run.sh` from this project. It creates the
+output/work roots, builds the image only if missing, and runs a CLI job with ZIP
+export. Defaults request 32 total threads and a matching Docker CPU allowance.
+The script accepts exported variable overrides but does not load `.env`; use a
+new run name for each job and separate output/work roots from any active UI.
+
 Use `--keep-work` only when intermediate files are needed for diagnosis.
 Otherwise job-scoped work is removed after success or failure. The output job
 directory, logs, status metadata, and failed partial bundle remain available
