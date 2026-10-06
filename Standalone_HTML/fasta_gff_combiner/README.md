@@ -37,14 +37,31 @@ Concatenating FASTAs by hand breaks the moment two sequences share a name, and s
 
 Open `fasta_gff_combiner.html` directly in a browser (or serve via `python3 -m http.server`). No build step needed.
 
+### Circular sequences
+
+Origin-spanning annotations follow the [GFF3 circular-genome convention](https://github.com/The-Sequence-Ontology/Specifications/blob/master/gff3.md#circular-genomes): the end coordinate is the physical endpoint plus the sequence length. For a 60-base FASTA record named `p`, this feature covers bases 55..60 followed by 1..5:
+
+```gff3
+##gff-version 3
+##sequence-region p 1 60
+p	GenBank	region	1	60	.	+	.	ID=p_region;Is_circular=true
+p	GenBank	CDS	55	65	.	+	0	ID=wrap
+```
+
+The tool recognizes circular topology from a matched, full-length (`1..L`) landmark with exactly one `Is_circular=true` attribute and no `Parent` or `Derives_from`. It considers all GFF sources assigned to that exact FASTA record; an unmarked landmark is neutral, but duplicate, false, or unrecognized circular declarations on full-length landmarks prevent inference. Partial-length features and child features cannot establish sequence topology.
+
+With confirmed circular topology, an overrun is accepted when `1 <= start <= L < end <= 2L`. Missing or conflicting topology, a start beyond the physical sequence, or an end beyond the next copy retains the existing bounds warning. Invalid coordinates such as reversed endpoints still block export. Mismatched `##sequence-region` declarations still warn independently.
+
+Individual and ZIP exports use the same checks. Both preserve feature coordinates exactly and keep one copy of the original FASTA sequence, with `##sequence-region` remaining `1..L`. Renaming and explicit GFF-to-FASTA assignments continue to apply normally.
+
 ## Testing
 
 `test/` contains small FASTA/GFF fixtures and a Node harness that exercises the page's real
-parsing, GFF-rewrite, collision/disambiguation, and ZIP-writer logic against the DOM-free functions:
+parsing, GFF-rewrite, collision/disambiguation, circular bounds, and ZIP-writer logic against the DOM-free functions. The circular regression group also checks the actual individual/ZIP export guards and file contents:
 
 ```
 cd Standalone_HTML/fasta_gff_combiner
-node test/harness.mjs
+NODE_DISABLE_COMPILE_CACHE=1 node test/harness.mjs
 ```
 
 ## Files

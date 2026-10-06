@@ -1159,6 +1159,22 @@ function outputBlockers(output, nameMap = resolveExportNames()) {
   return blockers;
 }
 
+function hasCircularLandmark(record, entries) {
+  let circular = false;
+  for (const { feature } of entries) {
+    // A circular child or a partial-length feature does not establish topology
+    // for the FASTA record. Use original, assigned seqids, never export names.
+    if (feature.start !== 1 || feature.end !== record.length ||
+        feature.attrs.has('Parent') || feature.attrs.has('Derives_from')) continue;
+    const topology = attributeFields(feature.cols[8]).filter(field => field.key === 'Is_circular');
+    if (!topology.length) continue;
+    // Inspect every field: parseAttributes alone would hide duplicate declarations.
+    if (topology.length !== 1 || topology[0].value !== 'true') return false;
+    circular = true;
+  }
+  return circular;
+}
+
 function outputWarnings(output) {
   const warnings = [];
   const memberRecords = [...output.members].map(rid => records.find(record => record.id === rid)).filter(Boolean);
@@ -1182,8 +1198,13 @@ function outputWarnings(output) {
   const members = new Map([...output.members].map(rid => [rid, records.find(record => record.id === rid)]));
   for (const record of members.values()) {
     if (!record) continue;
-    for (const { feature, source } of featureEntriesForRecord(record)) {
-      if (feature.end > record.length) {
+    const entries = featureEntriesForRecord(record);
+    const circular = hasCircularLandmark(record, entries);
+    for (const { feature, source } of entries) {
+      // GFF3 circular coordinates use end = physical endpoint + landmark length.
+      // Only recognize a start in the landmark and an end in its next copy.
+      const circularWrap = circular && feature.start <= record.length && feature.end <= 2 * record.length;
+      if (feature.end > record.length && !circularWrap) {
         warnings.push(`${source.name} line ${feature.lineNo}: end ${feature.end} exceeds ${record.name} length ${record.length}`);
       }
     }
