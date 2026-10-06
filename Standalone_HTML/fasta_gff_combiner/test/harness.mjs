@@ -282,6 +282,104 @@ check('orphan seqid is reported', T.orphanSeqids().includes('ghost'));
 check('out-of-bounds feature warns rather than blocks',
   T.outputWarnings(protoOut).some(x => x.includes('exceeds')) && !T.outputBlockers(protoOut).some(x => x.includes('exceeds')));
 
+console.log('\n[circular topology and export preservation]');
+const circularPassStart = pass;
+const circularFailStart = fail;
+const landmark = (attrs = 'Is_circular=true', start = 1, end = 60) =>
+  `p\ts\tregion\t${start}\t${end}\t.\t+\t.\tID=landmark;${attrs}`;
+const wrap = (start = 55, end = 65, strand = '+') =>
+  `p\ts\tCDS\t${start}\t${end}\t.\t${strand}\t0\tID=wrap`;
+// Each scenario exercises the actual individual and ZIP download guards. Keep
+// the real ZIP writer here; the older ZIP-name test below replaces it with a stub.
+const circularCases = [
+  { name: 'linear overrun', rows: [wrap()], warns: true },
+  { name: 'explicit linear landmark', rows: [landmark('Is_circular=false'), wrap()], warns: true },
+  { name: 'unmarked landmark', rows: [landmark('Name=p'), wrap()], warns: true },
+  { name: 'circular wrap', rows: [landmark(), wrap()] },
+  { name: 'reverse-strand wrap', rows: [landmark(), wrap(55, 65, '-')] },
+  { name: 'first virtual endpoint', rows: [landmark(), wrap(60, 61)] },
+  { name: 'last virtual endpoint', rows: [landmark(), wrap(60, 120)] },
+  { name: 'end beyond next copy', rows: [landmark(), wrap(55, 121)], warns: true },
+  { name: 'start beyond landmark', rows: [landmark(), wrap(61, 65)], warns: true },
+  { name: 'reversed endpoints', rows: [landmark(), wrap(55, 5)], blocked: true },
+  { name: 'zero start', rows: [landmark(), wrap(0, 65)], blocked: true },
+  { name: 'negative start', rows: [landmark(), wrap(-1, 65)], blocked: true },
+  { name: 'short landmark', rows: [landmark('Is_circular=true', 1, 59), wrap()], warns: true },
+  { name: 'offset landmark', rows: [landmark('Is_circular=true', 2, 60), wrap()], warns: true },
+  { name: 'circular child', rows: [landmark('Is_circular=true;Parent=parent'), wrap()], warns: true },
+  { name: 'derived circular feature', rows: [landmark('Is_circular=true;Derives_from=precursor'), wrap()], warns: true },
+  { name: 'noncanonical circular value', rows: [landmark('Is_circular=True'), wrap()], warns: true },
+  { name: 'duplicate contradictory attributes', rows: [landmark('Is_circular=false;Is_circular=true'), wrap()], warns: true },
+  { name: 'duplicate true attributes', rows: [landmark('Is_circular=true;Is_circular=true'), wrap()], warns: true },
+  { name: 'conflicting landmarks', rows: [landmark(), landmark('Is_circular=false').replace('ID=landmark;', 'ID=other;'), wrap()], warns: true },
+  { name: 'conflicting matched source', rows: [landmark(), wrap()], extra: landmark('Is_circular=false').replace('ID=landmark;', 'ID=other;'), warns: true },
+  { name: 'topology from another matched source', rows: [wrap()], extra: landmark() },
+  { name: 'linear in-bounds', rows: [wrap(1, 60)] },
+  { name: 'circular split rows', rows: [landmark(), wrap(55, 60), wrap(1, 5)] },
+  { name: 'mismatched sequence-region stays visible', rows: ['##sequence-region p 1 59', landmark(), wrap()], regionWarn: true },
+];
+for (const scenario of circularCases) {
+  T.resetState();
+  await T.loadFastaFiles([file('p.fa', '>p original description\n' + 'ACGT'.repeat(15))]);
+  await T.loadGffFiles([file('p.gff3', scenario.rows.join('\n'))]);
+  if (scenario.extra) await T.loadGffFiles([file('extra.gff3', scenario.extra)]);
+  const record = T.records[0];
+  record.exportName = 'renamed';
+  const output = T.outputs[0];
+  T.toggleMember(output.id, record.id, true);
+  const warnings = T.outputWarnings(output);
+  check(`${scenario.name}: bounds warning`, warnings.some(w => w.includes('exceeds')) === !!scenario.warns, warnings);
+  check(`${scenario.name}: region warning`, warnings.some(w => w.includes('will be regenerated')) === !!scenario.regionWarn, warnings);
+  const downloads = [];
+  T.setDownloadCapture((blob, name) => downloads.push({ blob, name }));
+  alerts = []; confirms = [];
+  T.downloadOutput(output.id, 'fasta');
+  T.downloadOutput(output.id, 'gff');
+  T.downloadAllZip();
+  check(`${scenario.name}: all export guards agree`, scenario.blocked
+    ? downloads.length === 0 && alerts.length === 3 && confirms.length === 0
+    : downloads.length === 3 && alerts.length === 0 && confirms.length === (scenario.warns || scenario.regionWarn ? 3 : 0));
+  if (scenario.blocked) continue;
+  const expectedFasta = '>renamed original description\n' + 'ACGT'.repeat(15) + '\n';
+  const expectedRows = [...scenario.rows, ...(scenario.extra ? [scenario.extra] : [])]
+    .filter(row => !row.startsWith('#')).map(row => row.replace(/^p\t/, 'renamed\t'));
+  const expectedGff = '##gff-version 3\n##sequence-region renamed 1 60\n' + expectedRows.join('\n') + '\n';
+  check(`${scenario.name}: individual exports preserve physical sequence and exact feature columns`,
+    await downloads[0].blob.text() === expectedFasta && await downloads[1].blob.text() === expectedGff);
+  const zip = Buffer.from(await downloads[2].blob.arrayBuffer());
+  const entries = new Map();
+  let offset = 0;
+  while (zip.readUInt32LE(offset) === 0x04034b50) {
+    const size = zip.readUInt32LE(offset + 18);
+    const nameSize = zip.readUInt16LE(offset + 26);
+    const extraSize = zip.readUInt16LE(offset + 28);
+    const name = zip.subarray(offset + 30, offset + 30 + nameSize).toString();
+    const dataStart = offset + 30 + nameSize + extraSize;
+    entries.set(name, zip.subarray(dataStart, dataStart + size).toString());
+    offset = dataStart + size;
+  }
+  check(`${scenario.name}: real ZIP preserves the same FASTA and GFF`,
+    entries.size === 2 && entries.get(output.name + '.fasta') === expectedFasta && entries.get(output.name + '.gff') === expectedGff);
+}
+
+T.resetState();
+await T.loadFastaFiles([file('one.fa', '>p\n' + 'A'.repeat(60)), file('two.fa', '>p\n' + 'C'.repeat(60))]);
+await T.loadGffFiles([file('metadata.gff3', landmark()), file('features.gff3', wrap())]);
+const matchedOut = T.outputs[0];
+for (const record of T.records) T.toggleMember(matchedOut.id, record.id, true);
+T.autoDisambiguate = true;
+const matches = T.ambiguousGffMatches();
+T.assignGffMatch(matches.find(m => m.source.name === 'metadata.gff3').key, T.records[0].id);
+const featureMatch = matches.find(m => m.source.name === 'features.gff3');
+T.assignGffMatch(featureMatch.key, T.records[1].id);
+check('circular metadata cannot leak to another FASTA with the same seqid', T.outputWarnings(matchedOut).some(w => w.includes('exceeds p length 60')));
+T.assignGffMatch(featureMatch.key, T.records[0].id);
+check('reassignment uses the chosen record topology without stale state', T.outputWarnings(matchedOut).length === 0);
+const matchedNames = T.resolveExportNames();
+check('auto-disambiguated circular features follow the assigned record',
+  featureLines(T.buildGff(matchedOut, matchedNames)).every(row => row.startsWith(matchedNames[T.records[0].id] + '\t')));
+console.log(`Circular regressions: ${circularCases.length} coordinate/topology scenarios + 1 assignment scenario; ${pass - circularPassStart} passed, ${fail - circularFailStart} failed`);
+
 console.log('\n[ZIP + scale]');
 T.resetState();
 await T.loadFastaFiles([file('x.fasta', '>x\nAAAA')]);
