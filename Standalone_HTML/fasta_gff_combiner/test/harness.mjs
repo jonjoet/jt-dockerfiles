@@ -307,8 +307,10 @@ const circularCases = [
   { name: 'short landmark', rows: [landmark('Is_circular=true', 1, 59), wrap()], warns: true },
   { name: 'offset landmark', rows: [landmark('Is_circular=true', 2, 60), wrap()], warns: true },
   { name: 'circular child', rows: [landmark('Is_circular=true;Parent=parent'), wrap()], warns: true },
+  { name: 'derived circular feature', rows: [landmark('Is_circular=true;Derives_from=precursor'), wrap()], warns: true },
   { name: 'noncanonical circular value', rows: [landmark('Is_circular=True'), wrap()], warns: true },
   { name: 'duplicate contradictory attributes', rows: [landmark('Is_circular=false;Is_circular=true'), wrap()], warns: true },
+  { name: 'duplicate true attributes', rows: [landmark('Is_circular=true;Is_circular=true'), wrap()], warns: true },
   { name: 'conflicting landmarks', rows: [landmark(), landmark('Is_circular=false').replace('ID=landmark;', 'ID=other;'), wrap()], warns: true },
   { name: 'conflicting matched source', rows: [landmark(), wrap()], extra: landmark('Is_circular=false').replace('ID=landmark;', 'ID=other;'), warns: true },
   { name: 'topology from another matched source', rows: [wrap()], extra: landmark() },
@@ -361,7 +363,7 @@ for (const scenario of circularCases) {
 }
 
 T.resetState();
-await T.loadFastaFiles([file('one.fa', '>p\n' + 'A'.repeat(60)), file('two.fa', '>p\n' + 'C'.repeat(30))]);
+await T.loadFastaFiles([file('one.fa', '>p\n' + 'A'.repeat(60)), file('two.fa', '>p\n' + 'C'.repeat(60))]);
 await T.loadGffFiles([file('metadata.gff3', landmark()), file('features.gff3', wrap())]);
 const matchedOut = T.outputs[0];
 for (const record of T.records) T.toggleMember(matchedOut.id, record.id, true);
@@ -370,7 +372,7 @@ const matches = T.ambiguousGffMatches();
 T.assignGffMatch(matches.find(m => m.source.name === 'metadata.gff3').key, T.records[0].id);
 const featureMatch = matches.find(m => m.source.name === 'features.gff3');
 T.assignGffMatch(featureMatch.key, T.records[1].id);
-check('circular metadata cannot leak to another FASTA with the same seqid', T.outputWarnings(matchedOut).some(w => w.includes('exceeds p length 30')));
+check('circular metadata cannot leak to another FASTA with the same seqid', T.outputWarnings(matchedOut).some(w => w.includes('exceeds p length 60')));
 T.assignGffMatch(featureMatch.key, T.records[0].id);
 check('reassignment uses the chosen record topology without stale state', T.outputWarnings(matchedOut).length === 0);
 const matchedNames = T.resolveExportNames();

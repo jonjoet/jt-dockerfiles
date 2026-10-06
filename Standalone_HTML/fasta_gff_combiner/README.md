@@ -61,7 +61,7 @@ parsing, GFF-rewrite, collision/disambiguation, circular bounds, and ZIP-writer 
 
 ```
 cd Standalone_HTML/fasta_gff_combiner
-NODE_DISABLE_COMPILE_CACHE=1 node test/harness.mjs
+node test/harness.mjs
 ```
 
 ## Files
