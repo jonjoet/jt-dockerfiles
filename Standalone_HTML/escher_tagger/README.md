@@ -9,6 +9,7 @@ A bookmarklet that adds a small panel to any [Escher](https://escher.github.io) 
 - Values are loaded into Escher as ordinary reaction and metabolite data, so Escher's own color and size scales (Settings menu) control how they look
 - **Notes**: attach a note to the selection; it's recorded in the export and can also be dropped on the map as a text label (kept by Map > Save map JSON)
 - **Export JSON** (values + notes) or **CSV** (`type,id,value`); **Import** reloads a previous export or a plain Escher `{id: value}` data file
+- **Export model**: save the COBRA model loaded in Escher as JSON, unchanged when the original is available (see [Model export](#model-export)); Escher itself has no model export
 - **Undo** for value and note changes
 - Keeps any reaction/metabolite data already loaded in the page
 - Entirely client-side: no server, installation, uploads, or persistent storage
@@ -31,6 +32,21 @@ Open `escher_tagger.html` in a browser and drag the **Escher Tagger** button to 
 - **any node**: a reaction counts as selected when any of its nodes is selected, including its metabolites. This also picks up neighbouring reactions that share a selected metabolite.
 
 The **Reactions** and **Metabolites** checkboxes choose which of the two the actions apply to.
+
+## Model export
+
+Escher draws from its own converted copy of the model: bounds become just reversible/irreversible, reactions that only run backwards are flipped, and display fields are added. The original COBRA JSON is kept only in two cases, and **Export model** returns it byte-for-byte in both:
+
+- **The model embedded in the page.** HTMLs made by `escher-cli` (or `Builder.save_html` with a model) embed the full model, so this is the normal case. Saved as `<model id>.json`.
+- **A model loaded from the Model menu after the tagger was started.** The tagger records the file as Escher loads it.
+
+Otherwise, for example a model loaded from the menu before the tagger was started, the tagger rebuilds a COBRA JSON from Escher's copy, saves it as `<map>.model.from_escher.json`, and says so in the panel. The rebuilt model keeps reactions, metabolites, stoichiometry, reversibility, gene rules, objective coefficients, compartments, and annotations, but:
+
+- all bounds become `0/1000` or `-1000/1000`, so exchange limits (e.g. glucose uptake) are lost and FBA results will differ
+- reactions that could only run backwards are flipped to forwards (equivalent network, opposite sign)
+- genes not used in any gene reaction rule are dropped, as is model-level metadata (ID, name, notes)
+
+Use the rebuilt model for drawing or IDs, not for FBA. Before exporting, the tagger checks that the original's reactions, metabolites, reversibility, and stoichiometry match what Escher has loaded, so a model swapped in through the menu is never exported as the stale embedded one.
 
 ## Limitations
 

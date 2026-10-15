@@ -34,6 +34,7 @@
   <li>In Escher, switch to Select mode (Edit menu, or <code>v</code>), then click, shift-click, or drag a box over nodes.</li>
   <li>Type a value and press <b>Set</b>, or press <b>Highlight</b>. Notes can also be placed on the map as text labels.</li>
   <li><b>Export JSON</b> saves values and notes; <b>Import</b> loads them back. Use Escher's Map &gt; Save map JSON to keep the text labels.</li>
+  <li><b>Export model</b> saves the COBRA model loaded in Escher as JSON. The full original is exported when the page embeds it (e.g. HTMLs made by <code>jt_escher</code>) or when it was loaded from the Model menu after the tagger started; otherwise the panel says it was rebuilt, with simplified bounds.</li>
 </ol>
 
 <details>
@@ -54,6 +55,7 @@
  *   - add a note: a text label placed on the map (saved with the map JSON)
  *     and recorded in the export
  *   - export everything as JSON or CSV, or re-import a previous export
+ *   - export the COBRA model loaded in Escher (see "Model export" below)
  *
  * Values are pushed straight into Escher as reaction/metabolite data, so
  * Escher's own color/size scales (Settings menu) control how they look.
@@ -105,6 +107,18 @@
     alert('Escher Tagger: no Escher map found on this page. ' +
           'Open a map first (in Jupyter, run this on an exported HTML file instead).')
     return
+  }
+
+  // Remember every model loaded from now on (Model menu > Load / Clear).
+  // Escher only keeps a converted copy of those, so this is the only way to
+  // export them unchanged later.
+  if (typeof builder.load_model === 'function' && !builder.__taggerLoadHook) {
+    var eschersLoadModel = builder.load_model
+    builder.load_model = function (modelData) {
+      builder.__taggerLoaded = { data: modelData }
+      return eschersLoadModel.apply(this, arguments)
+    }
+    builder.__taggerLoadHook = true
   }
 
   // ---------------------------------------------------------------------
@@ -319,6 +333,105 @@
   }
 
   // ---------------------------------------------------------------------
+  // Model export
+  //
+  // Escher draws from a converted copy of the model (builder.cobra_model):
+  // bounds are reduced to reversible/irreversible, reverse-only reactions
+  // are flipped, and display fields are added. The original COBRA JSON
+  // survives only as builder.model_data (the model the page was opened with)
+  // or, for later Model menu loads, in the hook above. Export the original
+  // when it is the model currently loaded; otherwise rebuild a COBRA JSON
+  // from the converted copy and say what was lost.
+  // ---------------------------------------------------------------------
+  var ESCHER_RXN_FIELDS = ['bigg_id', 'reversibility', 'genes', 'data', 'data_string', 'gene_string', 'reverse_flux']
+  var ESCHER_MET_FIELDS = ['bigg_id', 'data', 'data_string']
+
+  function copyExcept (obj, skip) {
+    var out = {}
+    for (var k in obj) {
+      if (skip.indexOf(k) === -1 && obj[k] !== undefined) out[k] = JSON.parse(JSON.stringify(obj[k]))
+    }
+    return out
+  }
+
+  function asModel (d) {
+    if (typeof d === 'string') { try { d = JSON.parse(d) } catch (e) { return null } }
+    return d && Array.isArray(d.reactions) && Array.isArray(d.metabolites) ? d : null
+  }
+
+  // Does COBRA JSON `orig` match Escher's converted copy `cm`? Compares IDs,
+  // reversibility and stoichiometry (undoing Escher's flip of reverse-only
+  // reactions), so a model swapped in through the menu is not mistaken for
+  // the one the page was opened with.
+  function matchesLoaded (orig, cm) {
+    if (orig.reactions.length !== Object.keys(cm.reactions).length) return false
+    if (orig.metabolites.length !== Object.keys(cm.metabolites).length) return false
+    for (var j = 0; j < orig.metabolites.length; j++) {
+      if (!cm.metabolites.hasOwnProperty(orig.metabolites[j].id)) return false
+    }
+    for (var i = 0; i < orig.reactions.length; i++) {
+      var r = orig.reactions[i]
+      var c = cm.reactions[r.id]
+      if (!c) return false
+      var reversible = r.lower_bound < 0 && r.upper_bound > 0
+      if (Boolean(c.reversibility) !== reversible) return false
+      var flip = r.upper_bound <= 0 && r.lower_bound < 0 ? -1 : 1
+      var mets = r.metabolites || {}
+      if (Object.keys(mets).length !== Object.keys(c.metabolites || {}).length) return false
+      for (var m in mets) if (c.metabolites[m] !== flip * mets[m]) return false
+    }
+    return true
+  }
+
+  function rebuildModel (cm) {
+    var genes = {}
+    var compartments = {}
+    var reactions = Object.keys(cm.reactions).map(function (id) {
+      var r = cm.reactions[id]
+      ;(r.genes || []).forEach(function (g) {
+        if (g.bigg_id && !genes[g.bigg_id]) genes[g.bigg_id] = Object.assign({ id: g.bigg_id }, copyExcept(g, ['bigg_id']))
+      })
+      return Object.assign({ id: id }, copyExcept(r, ESCHER_RXN_FIELDS), {
+        lower_bound: r.reversibility ? -1000 : 0,
+        upper_bound: 1000
+      })
+    })
+    var metabolites = Object.keys(cm.metabolites).map(function (id) {
+      var m = cm.metabolites[id]
+      if (m.compartment) compartments[m.compartment] = ''
+      return Object.assign({ id: id }, copyExcept(m, ESCHER_MET_FIELDS))
+    })
+    var model = {
+      id: 'from_escher',
+      metabolites: metabolites,
+      reactions: reactions,
+      genes: Object.keys(genes).map(function (k) { return genes[k] }),
+      version: '1'
+    }
+    if (Object.keys(compartments).length) model.compartments = compartments
+    return model
+  }
+
+  function exportModel () {
+    var cm = builder.cobra_model
+    if (!cm || !cm.reactions) {
+      status('No model is loaded in Escher (Model > Load COBRA model JSON).')
+      return
+    }
+    // Most recent load seen by the hook, else the model the page opened with.
+    var seen = builder.__taggerLoaded
+    var orig = asModel(seen ? seen.data : builder.model_data)
+    if (orig && matchesLoaded(orig, cm)) {
+      download((orig.id || mapName()).replace(/[^\w.-]+/g, '_') + '.json', JSON.stringify(orig), 'application/json')
+      status('Exported the full model' + (seen ? ' loaded from the Model menu' : ' embedded in this page') + ', unchanged.')
+      return
+    }
+    download(mapName() + '.model.from_escher.json', JSON.stringify(rebuildModel(cm)), 'application/json')
+    status('The original model file isn\'t available in this page, so this was rebuilt from Escher\'s copy. ' +
+           'Bounds are only 0/±1000 and reverse-only reactions are flipped; use the original model for FBA.')
+  }
+
+  // ---------------------------------------------------------------------
   // Panel UI
   // ---------------------------------------------------------------------
   var css = [
@@ -361,6 +474,7 @@
     '<hr>' +
     '<div class="row"><button data-a="json">Export JSON</button><button data-a="csv">CSV</button><button data-a="imp">Import</button>' +
     '<input type="file" name="file" accept=".json,application/json" style="display:none"></div>' +
+    '<div class="row"><button data-a="model" title="Save the COBRA model loaded in Escher as JSON">Export model</button><span class="sel">COBRA JSON</span></div>' +
     '<div class="row"><button data-a="undo">Undo</button><button data-a="all">Clear all</button><span class="sel" data-f="tot"></span></div>' +
     '<div class="st" data-f="st"></div>' +
     '</div>'
@@ -399,6 +513,7 @@
     if (a === 'note') addNote()
     if (a === 'json') exportJson()
     if (a === 'csv') exportCsv()
+    if (a === 'model') exportModel()
     if (a === 'imp') panel.querySelector('[name=file]').click()
     if (a === 'undo') undo()
     if (a === 'all') clearAll()
