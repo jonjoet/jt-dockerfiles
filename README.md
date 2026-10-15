@@ -63,5 +63,6 @@ JavaScript apps designed to be shared as single HTML files and run in the browse
 | [fasta_gff_combiner](Standalone_HTML/fasta_gff_combiner/) | Combine sequences from multiple FASTAs (+ matching GFFs) into one or more composite genomes — e.g. chromosome + plasmids → strain |
 | [feature_pruner](Standalone_HTML/feature_pruner/) | Review duplicate GFF3 annotations, uncheck unwanted features, and export a cleaned GFF3 with an optional FASTA overview |
 | [har-sanitizer](Standalone_HTML/har-sanitizer/) | Convenient single-file build of [Cloudflare's HAR Sanitizer](https://github.com/cloudflare/har-sanitizer) — redact cookies, tokens & secrets from HAR files before sharing |
+| [escher_tagger](Standalone_HTML/escher_tagger/) | Bookmarklet for Escher maps: select reactions and metabolites on the map to assign values, highlight, or annotate them, then export as JSON/CSV |
 | [dna_spec](Standalone_HTML/dna_spec/) | Drag-and-drop assembly of reusable DNA parts into constructs (WIP) |
 | [rescount](Standalone_HTML/rescount/) | Count restriction enzyme cut sites across multi-FASTA sequences |
