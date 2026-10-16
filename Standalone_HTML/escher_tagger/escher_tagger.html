@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escher Tagger</title>
+<style>
+  :root { --fg: #222; --bg: #fff; --muted: #666; --accent: #2f6fb5; --code: #f2f2f2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6e6e6; --bg: #1b1b1b; --muted: #aaa; --accent: #5b9be0; --code: #2a2a2a; }
+  }
+  body { font: 15px/1.55 -apple-system, Segoe UI, Helvetica, Arial, sans-serif; max-width: 680px;
+         margin: 40px auto; padding: 0 16px; color: var(--fg); background: var(--bg); }
+  a.bm { display: inline-block; padding: 8px 16px; background: var(--accent); color: #fff;
+         border-radius: 6px; text-decoration: none; font-weight: 600; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 3px; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  details { margin-top: 24px; }
+  pre { background: var(--code); padding: 12px; overflow-x: auto; font-size: 12px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>Escher Tagger</h1>
+<p>A bookmarklet that adds a panel to any Escher map: select nodes, then set values, highlight, or annotate them, and export the result.</p>
+<p>Drag this button to your bookmarks bar:</p>
+<p><a class="bm" id="bm" href="#">Escher Tagger</a></p>
+<p class="muted">Firefox: if dragging doesn't work, right-click the button and choose Bookmark Link.</p>
+
+<h2>Use</h2>
+<ol>
+  <li>Open an Escher map (a standalone HTML from <code>jt_escher</code>, escher.github.io, or any page that embeds Escher).</li>
+  <li>Click the bookmark. A panel appears at the top right; click the bookmark again to hide or show it.</li>
+  <li>In Escher, switch to Select mode (Edit menu, or <code>v</code>), then click, shift-click, or drag a box over nodes.</li>
+  <li>Type a value and press <b>Set</b>, or press <b>Highlight</b>. Notes can also be placed on the map as text labels.</li>
+  <li><b>Export JSON</b> saves values and notes; <b>Import</b> loads them back. Use Escher's Map &gt; Save map JSON to keep the text labels.</li>
+  <li><b>Export model</b> saves the COBRA model loaded in Escher as JSON. The full original is exported when the page embeds it (e.g. HTMLs made by <code>jt_escher</code>) or when it was loaded from the Model menu after the tagger started; otherwise the panel says it was rebuilt, with simplified bounds.</li>
+</ol>
+
+<details>
+  <summary>Bookmarklet source</summary>
+  <pre id="src-view"></pre>
+</details>
+
+<!-- The bookmarklet. Edit the code here; the button above is built from it when this page opens. -->
+<script type="text/plain" id="bookmarklet-src">
+/*
+ * Escher Tagger — a bookmarklet that adds a small panel to any Escher page
+ * (standalone HTML, escher.github.io, Jupyter-exported HTML).
+ *
+ * Select nodes in Escher (Select mode: click, shift-click, or drag a box),
+ * then use the panel to:
+ *   - set a value on the selected reactions and/or metabolites
+ *   - highlight them (sets a fixed "highlight" value)
+ *   - add a note: a text label placed on the map (saved with the map JSON)
+ *     and recorded in the export
+ *   - export everything as JSON or CSV, or re-import a previous export
+ *   - export the COBRA model loaded in Escher (see "Model export" below)
+ *
+ * Values are pushed straight into Escher as reaction/metabolite data, so
+ * Escher's own color/size scales (Settings menu) control how they look.
+ * Escher keys data by BiGG ID, so every copy of a reaction on the map gets
+ * the same value.
+ *
+ * Which reactions count as "selected":
+ *   - "markers" (default): a reaction is selected if one of its marker nodes
+ *     (the small midpoint nodes, not metabolites) is selected. Dragging a box
+ *     over the middle of a reaction grabs its marker.
+ *   - "any node": a reaction is selected if any of its nodes, including its
+ *     metabolites, is selected. Grabs neighbouring reactions too.
+ */
+(function () {
+  'use strict'
+
+  var PANEL_ID = 'escher-tagger-panel'
+
+  // Re-running the bookmarklet toggles the panel.
+  var existing = document.getElementById(PANEL_ID)
+  if (existing) {
+    existing.style.display = existing.style.display === 'none' ? '' : 'none'
+    return
+  }
+
+  // ---------------------------------------------------------------------
+  // Find the Escher Builder. Builder binds itself as d3 data on its
+  // container element, so this works even when the page never stored it in
+  // a global (the Python save_html template doesn't).
+  // ---------------------------------------------------------------------
+  function isBuilder (b) {
+    return b && typeof b === 'object' && b.map && typeof b.set_reaction_data === 'function'
+  }
+
+  function findBuilder () {
+    var candidates = [window.builder, window.b, window.escherBuilder]
+    for (var i = 0; i < candidates.length; i++) {
+      if (isBuilder(candidates[i])) return candidates[i]
+    }
+    var all = document.querySelectorAll('*')
+    for (var j = 0; j < all.length; j++) {
+      if (isBuilder(all[j].__data__)) return all[j].__data__
+    }
+    return null
+  }
+
+  var builder = findBuilder()
+  if (!builder) {
+    alert('Escher Tagger: no Escher map found on this page. ' +
+          'Open a map first (in Jupyter, run this on an exported HTML file instead).')
+    return
+  }
+
+  // Remember every model loaded from now on (Model menu > Load / Clear).
+  // Escher only keeps a converted copy of those, so this is the only way to
+  // export them unchanged later.
+  if (typeof builder.load_model === 'function' && !builder.__taggerLoadHook) {
+    var eschersLoadModel = builder.load_model
+    builder.load_model = function (modelData) {
+      builder.__taggerLoaded = { data: modelData }
+      return eschersLoadModel.apply(this, arguments)
+    }
+    builder.__taggerLoadHook = true
+  }
+
+  // ---------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------
+  var state = {
+    reaction: {}, // bigg_id -> number
+    metabolite: {}, // bigg_id -> number
+    notes: [] // {text, reactions: [...], metabolites: [...], text_label_id}
+  }
+  var history = []
+
+  // Start from whatever data is already loaded, so nothing is lost.
+  function firstDataset (d) {
+    if (!d) return {}
+    if (Array.isArray(d)) d = d[0]
+    var out = {}
+    for (var k in d) {
+      var v = Number(d[k])
+      if (d[k] !== null && d[k] !== '' && !isNaN(v)) out[k] = v
+    }
+    return out
+  }
+  try {
+    state.reaction = firstDataset(builder.settings.get('reaction_data'))
+    state.metabolite = firstDataset(builder.settings.get('metabolite_data'))
+  } catch (e) { /* older builds without settings.get; start empty */ }
+
+  function snapshot () {
+    history.push(JSON.stringify(state))
+    if (history.length > 50) history.shift()
+  }
+
+  function push () {
+    var r = Object.keys(state.reaction).length ? Object.assign({}, state.reaction) : null
+    var m = Object.keys(state.metabolite).length ? Object.assign({}, state.metabolite) : null
+    builder.set_reaction_data(r)
+    builder.set_metabolite_data(m)
+    refresh()
+  }
+
+  // ---------------------------------------------------------------------
+  // Selection -> BiGG IDs
+  // ---------------------------------------------------------------------
+  function selectedNodeIds () {
+    var map = builder.map
+    if (typeof map.get_selected_node_ids === 'function') return map.get_selected_node_ids()
+    var ids = []
+    var sel = document.querySelectorAll('#nodes .selected')
+    for (var i = 0; i < sel.length; i++) if (sel[i].__data__) ids.push(sel[i].__data__.node_id)
+    return ids
+  }
+
+  function currentSelection () {
+    var map = builder.map
+    var mode = panel.querySelector('[name=rxnmode]:checked').value
+    var nodeIds = selectedNodeIds()
+    var rxns = {}
+    var mets = {}
+    var xs = 0
+    var ys = 0
+    var n = 0
+    nodeIds.forEach(function (nid) {
+      var node = map.nodes[nid]
+      if (!node) return
+      xs += node.x; ys += node.y; n++
+      var isMet = node.node_type === 'metabolite'
+      if (isMet && node.bigg_id) mets[node.bigg_id] = true
+      if (!isMet || mode === 'any') {
+        (node.connected_segments || []).forEach(function (cs) {
+          var r = map.reactions[cs.reaction_id]
+          if (r && r.bigg_id) rxns[r.bigg_id] = true
+        })
+      }
+    })
+    return {
+      reactions: Object.keys(rxns).sort(),
+      metabolites: Object.keys(mets).sort(),
+      center: n ? { x: xs / n, y: ys / n } : null,
+      nodeCount: n
+    }
+  }
+
+  function targets (sel) {
+    var useR = panel.querySelector('[name=useR]').checked
+    var useM = panel.querySelector('[name=useM]').checked
+    return {
+      reactions: useR ? sel.reactions : [],
+      metabolites: useM ? sel.metabolites : []
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------
+  function assign (value) {
+    var t = targets(currentSelection())
+    if (!t.reactions.length && !t.metabolites.length) {
+      status('Nothing selected. Use Select mode (Edit menu) and click or drag over nodes.')
+      return
+    }
+    snapshot()
+    t.reactions.forEach(function (id) { state.reaction[id] = value })
+    t.metabolites.forEach(function (id) { state.metabolite[id] = value })
+    push()
+    status('Set ' + value + ' on ' + t.reactions.length + ' reaction(s), ' +
+           t.metabolites.length + ' metabolite(s).')
+  }
+
+  function clearSelected () {
+    var t = targets(currentSelection())
+    snapshot()
+    t.reactions.forEach(function (id) { delete state.reaction[id] })
+    t.metabolites.forEach(function (id) { delete state.metabolite[id] })
+    push()
+    status('Cleared values on the selection.')
+  }
+
+  function addNote () {
+    var text = panel.querySelector('[name=note]').value.trim()
+    if (!text) { status('Type a note first.'); return }
+    var sel = currentSelection()
+    var t = targets(sel)
+    var note = { text: text, reactions: t.reactions, metabolites: t.metabolites }
+    if (sel.center && panel.querySelector('[name=noteOnMap]').checked &&
+        typeof builder.map.new_text_label === 'function') {
+      note.text_label_id = builder.map.new_text_label(
+        { x: sel.center.x + 30, y: sel.center.y - 30 }, text)
+    }
+    snapshot()
+    state.notes.push(note)
+    panel.querySelector('[name=note]').value = ''
+    refresh()
+    status('Note added' + (note.text_label_id ? ' (also placed on the map; Save map JSON keeps it).' : '.'))
+  }
+
+  function undo () {
+    if (!history.length) { status('Nothing to undo.'); return }
+    var prev = JSON.parse(history.pop())
+    // Text labels already drawn on the map are left alone; remove them in Escher.
+    state = prev
+    push()
+    status('Undone. (Map text labels are not removed; delete those in Escher.)')
+  }
+
+  function clearAll () {
+    if (!confirm('Clear all tagger values (reaction and metabolite data)?')) return
+    snapshot()
+    state.reaction = {}
+    state.metabolite = {}
+    state.notes = []
+    push()
+    status('All values cleared.')
+  }
+
+  // ---------------------------------------------------------------------
+  // Import / export
+  // ---------------------------------------------------------------------
+  function mapName () {
+    try {
+      var name = builder.map.map_name || ''
+      return name.replace(/[^\w.-]+/g, '_') || 'escher'
+    } catch (e) { return 'escher' }
+  }
+
+  function download (filename, text, type) {
+    var blob = new Blob([text], { type: type })
+    var a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove() }, 1000)
+  }
+
+  function exportJson () {
+    var out = {
+      escher_tagger: 1,
+      map_name: builder.map.map_name || null,
+      reaction_data: state.reaction,
+      metabolite_data: state.metabolite,
+      notes: state.notes
+    }
+    download(mapName() + '.tags.json', JSON.stringify(out, null, 2), 'application/json')
+  }
+
+  function exportCsv () {
+    var rows = ['type,id,value']
+    Object.keys(state.reaction).sort().forEach(function (k) { rows.push('reaction,' + k + ',' + state.reaction[k]) })
+    Object.keys(state.metabolite).sort().forEach(function (k) { rows.push('metabolite,' + k + ',' + state.metabolite[k]) })
+    download(mapName() + '.tags.csv', rows.join('\n') + '\n', 'text/csv')
+  }
+
+  function importJson (file) {
+    var reader = new FileReader()
+    reader.onload = function () {
+      var d
+      try { d = JSON.parse(reader.result) } catch (e) { status('Not valid JSON.'); return }
+      snapshot()
+      if (d && d.escher_tagger) {
+        Object.assign(state.reaction, firstDataset(d.reaction_data))
+        Object.assign(state.metabolite, firstDataset(d.metabolite_data))
+        if (Array.isArray(d.notes)) state.notes = state.notes.concat(d.notes)
+      } else {
+        // A plain Escher data file ({id: value}): treat it as reaction data.
+        Object.assign(state.reaction, firstDataset(d))
+      }
+      push()
+      status('Imported ' + file.name + '.')
+    }
+    reader.readAsText(file)
+  }
+
+  // ---------------------------------------------------------------------
+  // Model export
+  //
+  // Escher draws from a converted copy of the model (builder.cobra_model):
+  // bounds are reduced to reversible/irreversible, reverse-only reactions
+  // are flipped, and display fields are added. The original COBRA JSON
+  // survives only as builder.model_data (the model the page was opened with)
+  // or, for later Model menu loads, in the hook above. Export the original
+  // when it is the model currently loaded; otherwise rebuild a COBRA JSON
+  // from the converted copy and say what was lost.
+  // ---------------------------------------------------------------------
+  var ESCHER_RXN_FIELDS = ['bigg_id', 'reversibility', 'genes', 'data', 'data_string', 'gene_string', 'reverse_flux']
+  var ESCHER_MET_FIELDS = ['bigg_id', 'data', 'data_string']
+
+  function copyExcept (obj, skip) {
+    var out = {}
+    for (var k in obj) {
+      if (skip.indexOf(k) === -1 && obj[k] !== undefined) out[k] = JSON.parse(JSON.stringify(obj[k]))
+    }
+    return out
+  }
+
+  function asModel (d) {
+    if (typeof d === 'string') { try { d = JSON.parse(d) } catch (e) { return null } }
+    return d && Array.isArray(d.reactions) && Array.isArray(d.metabolites) ? d : null
+  }
+
+  // Does COBRA JSON `orig` match Escher's converted copy `cm`? Compares IDs,
+  // reversibility and stoichiometry (undoing Escher's flip of reverse-only
+  // reactions), so a model swapped in through the menu is not mistaken for
+  // the one the page was opened with.
+  function matchesLoaded (orig, cm) {
+    if (orig.reactions.length !== Object.keys(cm.reactions).length) return false
+    if (orig.metabolites.length !== Object.keys(cm.metabolites).length) return false
+    for (var j = 0; j < orig.metabolites.length; j++) {
+      if (!cm.metabolites.hasOwnProperty(orig.metabolites[j].id)) return false
+    }
+    for (var i = 0; i < orig.reactions.length; i++) {
+      var r = orig.reactions[i]
+      var c = cm.reactions[r.id]
+      if (!c) return false
+      var reversible = r.lower_bound < 0 && r.upper_bound > 0
+      if (Boolean(c.reversibility) !== reversible) return false
+      var flip = r.upper_bound <= 0 && r.lower_bound < 0 ? -1 : 1
+      var mets = r.metabolites || {}
+      if (Object.keys(mets).length !== Object.keys(c.metabolites || {}).length) return false
+      for (var m in mets) if (c.metabolites[m] !== flip * mets[m]) return false
+    }
+    return true
+  }
+
+  function rebuildModel (cm) {
+    var genes = {}
+    var compartments = {}
+    var reactions = Object.keys(cm.reactions).map(function (id) {
+      var r = cm.reactions[id]
+      ;(r.genes || []).forEach(function (g) {
+        if (g.bigg_id && !genes[g.bigg_id]) genes[g.bigg_id] = Object.assign({ id: g.bigg_id }, copyExcept(g, ['bigg_id']))
+      })
+      return Object.assign({ id: id }, copyExcept(r, ESCHER_RXN_FIELDS), {
+        lower_bound: r.reversibility ? -1000 : 0,
+        upper_bound: 1000
+      })
+    })
+    var metabolites = Object.keys(cm.metabolites).map(function (id) {
+      var m = cm.metabolites[id]
+      if (m.compartment) compartments[m.compartment] = ''
+      return Object.assign({ id: id }, copyExcept(m, ESCHER_MET_FIELDS))
+    })
+    var model = {
+      id: 'from_escher',
+      metabolites: metabolites,
+      reactions: reactions,
+      genes: Object.keys(genes).map(function (k) { return genes[k] }),
+      version: '1'
+    }
+    if (Object.keys(compartments).length) model.compartments = compartments
+    return model
+  }
+
+  function exportModel () {
+    var cm = builder.cobra_model
+    if (!cm || !cm.reactions) {
+      status('No model is loaded in Escher (Model > Load COBRA model JSON).')
+      return
+    }
+    // Most recent load seen by the hook, else the model the page opened with.
+    var seen = builder.__taggerLoaded
+    var orig = asModel(seen ? seen.data : builder.model_data)
+    if (orig && matchesLoaded(orig, cm)) {
+      download((orig.id || mapName()).replace(/[^\w.-]+/g, '_') + '.json', JSON.stringify(orig), 'application/json')
+      status('Exported the full model' + (seen ? ' loaded from the Model menu' : ' embedded in this page') + ', unchanged.')
+      return
+    }
+    download(mapName() + '.model.from_escher.json', JSON.stringify(rebuildModel(cm)), 'application/json')
+    status('The original model file isn\'t available in this page, so this was rebuilt from Escher\'s copy. ' +
+           'Bounds are only 0/±1000 and reverse-only reactions are flipped; use the original model for FBA.')
+  }
+
+  // ---------------------------------------------------------------------
+  // Panel UI
+  // ---------------------------------------------------------------------
+  var css = [
+    '#' + PANEL_ID + '{position:fixed;top:60px;right:16px;z-index:100000;width:272px;',
+    'background:#fff;color:#222;border:1px solid #bbb;border-radius:6px;',
+    'box-shadow:0 4px 16px rgba(0,0,0,.18);font:12px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif}',
+    '#' + PANEL_ID + ' .hd{display:flex;justify-content:space-between;align-items:center;',
+    'padding:6px 10px;background:#f2f2f2;border-bottom:1px solid #ddd;border-radius:6px 6px 0 0;cursor:move;font-weight:600}',
+    '#' + PANEL_ID + ' .bd{padding:8px 10px}',
+    '#' + PANEL_ID + ' .row{display:flex;gap:6px;align-items:center;margin:5px 0;flex-wrap:wrap}',
+    '#' + PANEL_ID + ' input[type=number],#' + PANEL_ID + ' input[type=text]{flex:1;min-width:0;padding:3px 5px;border:1px solid #bbb;border-radius:3px;font:inherit}',
+    '#' + PANEL_ID + ' button{padding:3px 8px;border:1px solid #aaa;border-radius:3px;background:#f7f7f7;cursor:pointer;font:inherit}',
+    '#' + PANEL_ID + ' button:hover{background:#e8e8e8}',
+    '#' + PANEL_ID + ' button.pri{background:#2f6fb5;border-color:#2f6fb5;color:#fff}',
+    '#' + PANEL_ID + ' hr{border:0;border-top:1px solid #e3e3e3;margin:7px 0}',
+    '#' + PANEL_ID + ' .sel{color:#555}',
+    '#' + PANEL_ID + ' .st{color:#2f6fb5;min-height:1.4em;margin-top:4px}',
+    '#' + PANEL_ID + ' .x{cursor:pointer;border:0;background:none;font-size:15px;padding:0 2px}',
+    '#' + PANEL_ID + ' label{display:inline-flex;gap:3px;align-items:center}'
+  ].join('')
+
+  var panel = document.createElement('div')
+  panel.id = PANEL_ID
+  panel.innerHTML =
+    '<style>' + css + '</style>' +
+    '<div class="hd"><span>Escher Tagger</span><button class="x" data-a="close" title="Hide (run bookmarklet again to show)">×</button></div>' +
+    '<div class="bd">' +
+    '<div class="sel" data-f="sel">No selection</div>' +
+    '<div class="row"><label><input type="checkbox" name="useR" checked>Reactions</label>' +
+    '<label><input type="checkbox" name="useM" checked>Metabolites</label></div>' +
+    '<div class="row" title="How a selected node maps to a reaction">Rxn from: ' +
+    '<label><input type="radio" name="rxnmode" value="markers" checked>markers</label>' +
+    '<label><input type="radio" name="rxnmode" value="any">any node</label></div>' +
+    '<hr>' +
+    '<div class="row"><input type="number" name="val" step="any" placeholder="value"><button class="pri" data-a="set">Set</button></div>' +
+    '<div class="row"><button data-a="hl">Highlight</button> as <input type="number" name="hlv" step="any" value="1" style="flex:0 0 56px"><button data-a="clr">Clear sel.</button></div>' +
+    '<hr>' +
+    '<div class="row"><input type="text" name="note" placeholder="note / annotation"><button data-a="note">Add</button></div>' +
+    '<div class="row"><label><input type="checkbox" name="noteOnMap" checked>also place as text label on map</label></div>' +
+    '<hr>' +
+    '<div class="row"><button data-a="json">Export JSON</button><button data-a="csv">CSV</button><button data-a="imp">Import</button>' +
+    '<input type="file" name="file" accept=".json,application/json" style="display:none"></div>' +
+    '<div class="row"><button data-a="model" title="Save the COBRA model loaded in Escher as JSON">Export model</button><span class="sel">COBRA JSON</span></div>' +
+    '<div class="row"><button data-a="undo">Undo</button><button data-a="all">Clear all</button><span class="sel" data-f="tot"></span></div>' +
+    '<div class="st" data-f="st"></div>' +
+    '</div>'
+  document.body.appendChild(panel)
+
+  function status (msg) { panel.querySelector('[data-f=st]').textContent = msg }
+
+  function refresh () {
+    var s = currentSelection()
+    var t = targets(s)
+    var el = panel.querySelector('[data-f=sel]')
+    if (!s.nodeCount) {
+      el.textContent = 'No selection — Select mode, then click/drag nodes.'
+    } else {
+      var preview = t.reactions.concat(t.metabolites)
+      el.textContent = t.reactions.length + ' reaction(s), ' + t.metabolites.length +
+        ' metabolite(s): ' + preview.slice(0, 6).join(', ') + (preview.length > 6 ? ', …' : '')
+      el.title = preview.join(', ')
+    }
+    panel.querySelector('[data-f=tot]').textContent =
+      Object.keys(state.reaction).length + ' rxn / ' + Object.keys(state.metabolite).length +
+      ' met / ' + state.notes.length + ' notes'
+  }
+
+  panel.addEventListener('click', function (e) {
+    var a = e.target.getAttribute && e.target.getAttribute('data-a')
+    if (!a) return
+    if (a === 'close') panel.style.display = 'none'
+    if (a === 'set') {
+      var raw = panel.querySelector('[name=val]').value
+      if (raw === '' || isNaN(Number(raw))) { status('Enter a number.'); return }
+      assign(Number(raw))
+    }
+    if (a === 'hl') assign(Number(panel.querySelector('[name=hlv]').value) || 1)
+    if (a === 'clr') clearSelected()
+    if (a === 'note') addNote()
+    if (a === 'json') exportJson()
+    if (a === 'csv') exportCsv()
+    if (a === 'model') exportModel()
+    if (a === 'imp') panel.querySelector('[name=file]').click()
+    if (a === 'undo') undo()
+    if (a === 'all') clearAll()
+  })
+  panel.querySelector('[name=file]').addEventListener('change', function (e) {
+    if (e.target.files[0]) importJson(e.target.files[0])
+    e.target.value = ''
+  })
+  panel.addEventListener('change', function (e) {
+    if (e.target.name === 'useR' || e.target.name === 'useM' || e.target.name === 'rxnmode') refresh()
+  })
+  // Enter in the value box = Set; in the note box = Add.
+  panel.addEventListener('keydown', function (e) {
+    e.stopPropagation() // keep Escher's keyboard shortcuts from firing while typing
+    if (e.key !== 'Enter') return
+    if (e.target.name === 'val') panel.querySelector('[data-a=set]').click()
+    if (e.target.name === 'note') addNote()
+  })
+  // Escher's shortcuts (Mousetrap) fire even inside text boxes, so keep
+  // keystrokes in the panel from reaching them.
+  panel.addEventListener('keyup', function (e) { e.stopPropagation() })
+  panel.addEventListener('keypress', function (e) { e.stopPropagation() })
+
+  // Keep the selection summary current as the user clicks/drags on the map.
+  function later () { setTimeout(refresh, 30) }
+  document.addEventListener('mouseup', later, true)
+  document.addEventListener('click', later, true)
+  document.addEventListener('keyup', later, true)
+
+  // Draggable header.
+  ;(function () {
+    var hd = panel.querySelector('.hd')
+    var dx = 0
+    var dy = 0
+    var dragging = false
+    hd.addEventListener('mousedown', function (e) {
+      if (e.target.classList.contains('x')) return
+      dragging = true
+      var r = panel.getBoundingClientRect()
+      dx = e.clientX - r.left; dy = e.clientY - r.top
+      e.preventDefault(); e.stopPropagation()
+    })
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return
+      panel.style.left = (e.clientX - dx) + 'px'
+      panel.style.top = (e.clientY - dy) + 'px'
+      panel.style.right = 'auto'
+    })
+    document.addEventListener('mouseup', function () { dragging = false })
+  })()
+
+  refresh()
+  status('Ready. Values already loaded in Escher were kept.')
+})()
+</script>
+
+<script>
+  (function () {
+    var src = document.getElementById('bookmarklet-src').textContent
+    document.getElementById('src-view').textContent = src.trim()
+    // Drop the header comment and comment-only lines to keep the bookmark short.
+    var code = src.replace(/^\s*\/\*[\s\S]*?\*\//, '')
+      .split('\n')
+      .filter(function (l) { return !/^\s*\/\//.test(l) && l.trim() !== '' })
+      .join('\n')
+    document.getElementById('bm').href = 'javascript:' + encodeURIComponent(code)
+  })()
+</script>
+</body>
+</html>
